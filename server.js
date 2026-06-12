@@ -72,14 +72,20 @@ wss.on('connection', (ws) => {
           ws.send(JSON.stringify({ type: 'pong' }));
           break;
         case 'frame':
+          console.log(`[Frame] 收到图像数据: ${sid} | Base64长度: ${msg.data?.length || 0}`);
           await handleFrame(sid, msg.data, ws);
           break;
         case 'audio':
+          console.log(`[Audio] 收到音频数据: ${sid} | Base64长度: ${msg.data?.length || 0}`);
           handleAudio(sid, msg.data, rtMgr, ws);
           break;
         case 'test_chat':
+        case 'text':
+          console.log(`[Chat] 收到文本消息: ${sid} | 内容: "${msg.data?.substring(0, 50) || ''}${msg.data?.length > 50 ? '...' : ''}"`);
           await handleChat(sid, msg.data, ws);
           break;
+        default:
+          console.log(`[WS] 未知消息类型: ${sid} | type: ${msg.type}`);
       }
     } catch (e) { console.error(`[WS] 错误:`, e.message); }
   });
@@ -94,22 +100,37 @@ wss.on('connection', (ws) => {
 
 // ── 帧分析 ──
 async function handleFrame(sid, b64, ws) {
+  console.log(`[Frame] 开始分析图像: ${sid} | 原始大小: ${b64?.length || 0} 字符`);
+  
+  let response;
   if (!API_OK) {
-    ws.send(JSON.stringify({ type: 'frame_analyzed', description: '[Demo] 画面', timestamp: Date.now() }));
+    response = '[Demo] 画面';
+    console.log(`[Frame] 演示模式回复: ${sid} | "${response}"`);
+    ws.send(JSON.stringify({ type: 'frame_analyzed', description: response, timestamp: Date.now() }));
     return;
   }
   try {
     const buf = Buffer.from(b64, 'base64');
+    console.log(`[Frame] 解码成功: ${sid} | 二进制大小: ${buf.length} 字节`);
+    
     const resized = await sharp(buf).resize(512, 512, { fit: 'inside' }).jpeg({ quality: 70 }).toBuffer();
+    console.log(`[Frame] 图像压缩完成: ${sid} | 压缩后大小: ${resized.length} 字节`);
+    
     const r = await openaiClient.chat.completions.create({
       model: 'step-3.7-flash',
       messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${resized.toString('base64')}`, detail: 'low' } }, { type: 'text', text: '用中文一句话描述摄像头画面。' }] }],
       max_tokens: 100,
     });
-    const desc = r.choices[0]?.message?.content || '无法分析';
-    ws.send(JSON.stringify({ type: 'frame_analyzed', description: desc, timestamp: Date.now() }));
-    EventBus.emit('frame_analyzed', { sessionId: sid, description: desc, timestamp: Date.now() });
-  } catch (e) { console.error('[Frame]', e.message); }
+    response = r.choices[0]?.message?.content || '无法分析';
+    console.log(`[Frame] AI分析完成: ${sid} | 结果: "${response}"`);
+    
+    ws.send(JSON.stringify({ type: 'frame_analyzed', description: response, timestamp: Date.now() }));
+    EventBus.emit('frame_analyzed', { sessionId: sid, description: response, timestamp: Date.now() });
+  } catch (e) { 
+    console.error('[Frame] 分析失败:', e.message); 
+    response = '分析失败: ' + e.message;
+    ws.send(JSON.stringify({ type: 'frame_analyzed', description: response, timestamp: Date.now() }));
+  }
 }
 
 // ── 实时音频 → 阶跃星辰 Realtime ──
@@ -124,26 +145,36 @@ function handleAudio(sid, b64, rtMgr, ws) {
 
 // ── 文字聊天 ──
 async function handleChat(sid, text, ws) {
-  if (!text?.trim()) return;
+  if (!text?.trim()) {
+    console.log(`[Chat] 空消息跳过: ${sid}`);
+    return;
+  }
+  
+  console.log(`[Chat] 收到用户消息: ${sid} | 内容: "${text}"`);
   EventBus.emit('user_speech', { sessionId: sid, text, timestamp: Date.now() });
 
   let reply;
   if (!API_OK) {
     reply = '[演示模式] 请配置 STEPFUN_API_KEY';
+    console.log(`[Chat] 演示模式回复: ${sid} | "${reply}"`);
   } else {
     try {
+      console.log(`[Chat] 调用AI接口: ${sid} | 模型: step-3.7-flash`);
       const r = await openaiClient.chat.completions.create({
         model: 'step-3.7-flash',
         messages: [{ role: 'system', content: '你是AI视觉对话助手，用中文简洁回应，2-3句话。' }, { role: 'user', content: text }],
         max_tokens: 300,
       });
       reply = r.choices[0]?.message?.content || '抱歉，请再说一次。';
+      console.log(`[Chat] AI回复完成: ${sid} | 结果: "${reply}"`);
     } catch (e) {
-      console.error('[Chat]', e.message);
+      console.error('[Chat] 调用失败:', e.message);
       reply = '抱歉，暂时无法回应。';
     }
   }
+  
   EventBus.emit('assistant_reply', { sessionId: sid, text: reply, timestamp: Date.now() });
+  console.log(`[Chat] 回复已发送: ${sid}`);
 }
 
 // ── 全局事件 → 对应浏览器 ──
