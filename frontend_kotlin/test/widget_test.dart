@@ -16,12 +16,12 @@ import 'package:frontend_kotlin/services/communication_service.dart';
 import 'package:frontend_kotlin/services/impl/mock_communication_service.dart';
 
 class MockSpeechRecognitionService implements SpeechRecognitionService {
-  StreamController<String>? _controller;
+  StreamController<ASRResult>? _controller;
 
   @override
-  Stream<String> startListening() {
-    _controller = StreamController<String>.broadcast();
-    Future.microtask(() => _controller?.add('测试语音识别结果'));
+  Stream<ASRResult> startListening() {
+    _controller = StreamController<ASRResult>.broadcast();
+    Future.microtask(() => _controller?.add(ASRResult('测试语音识别结果', isFinal: true)));
     return _controller!.stream;
   }
 

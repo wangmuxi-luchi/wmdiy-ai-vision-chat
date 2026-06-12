@@ -32,6 +32,14 @@ class MockCommunicationService implements CommunicationService {
     return response;
   }
 
+  @override
+  Future<void> updateConnection(String host, int port) async {
+    // 模拟更新连接配置
+    _isConnected = false;
+    await Future.delayed(const Duration(milliseconds: 100));
+    _isConnected = true;
+  }
+
   void simulateCommand(Map<String, dynamic> command) {
     _commandController.add(command);
   }
