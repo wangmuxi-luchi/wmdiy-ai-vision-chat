@@ -12,6 +12,8 @@ import 'package:frontend_kotlin/services/message_receiver_service.dart';
 import 'package:frontend_kotlin/services/command_receiver_service.dart';
 import 'package:frontend_kotlin/services/camera_image_service.dart';
 import 'package:frontend_kotlin/services/camera_service.dart';
+import 'package:frontend_kotlin/services/communication_service.dart';
+import 'package:frontend_kotlin/services/impl/mock_communication_service.dart';
 
 class MockSpeechRecognitionService implements SpeechRecognitionService {
   StreamController<String>? _controller;
@@ -196,6 +198,10 @@ class MockCameraServiceImpl implements CameraService {
 void main() {
   setUpAll(() async {
     await dotenv.load(fileName: '.env');
+  });
+
+  setUp(() {
+    GetIt.instance.reset();
     
     GetIt.instance.registerLazySingleton<SpeechRecognitionService>(
       () => MockSpeechRecognitionService(),
@@ -215,9 +221,12 @@ void main() {
     GetIt.instance.registerLazySingleton<CameraService>(
       () => MockCameraServiceImpl(),
     );
+    GetIt.instance.registerLazySingleton<CommunicationService>(
+      () => MockCommunicationService(),
+    );
   });
 
-  tearDownAll(() {
+  tearDown(() {
     GetIt.instance.reset();
   });
 
@@ -316,16 +325,20 @@ void main() {
 
     testWidgets('发送未发送区域的识别结果', (WidgetTester tester) async {
       await tester.pumpWidget(const MyApp());
-      await tester.pumpAndSettle(const Duration(seconds: 3));
+      await tester.pumpAndSettle();
 
-      expect(find.text('你好，我想问一下天气怎么样？'), findsOneWidget);
+      final pendingSpeechField = find.byType(TextField).first;
+      await tester.enterText(pendingSpeechField, '测试语音识别结果');
+      await tester.pumpAndSettle();
+
+      expect(find.text('测试语音识别结果'), findsOneWidget);
 
       final sendIcons = find.byIcon(Icons.send);
       expect(sendIcons, findsNWidgets(1));
       await tester.tap(sendIcons.first);
       await tester.pumpAndSettle(const Duration(milliseconds: 600));
 
-      expect(find.text('你好，我想问一下天气怎么样？'), findsOneWidget);
+      expect(find.text('测试语音识别结果'), findsOneWidget);
       expect(find.textContaining('回复：'), findsOneWidget);
     });
 

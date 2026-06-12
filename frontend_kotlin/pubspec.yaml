@@ -51,6 +51,9 @@ dependencies:
   # 图像选择器（用于从相册选择图片）
   image_picker: ^1.0.4
   
+  # WebSocket 通信
+  web_socket_channel: ^2.4.4
+  
 
 dev_dependencies:
   flutter_test:

@@ -7,9 +7,11 @@ import 'services/locator.dart';
 import 'services/speech_recognition_service.dart';
 import 'services/text_processor_service.dart';
 import 'services/message_receiver_service.dart';
+import 'services/impl/message_receiver_service_impl.dart';
 import 'services/command_receiver_service.dart';
 import 'services/camera_image_service.dart';
 import 'services/camera_service.dart';
+import 'services/communication_service.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -25,7 +27,9 @@ class _ChatScreenState extends State<ChatScreen> {
   late CommandReceiverService _commandReceiverService;
   late CameraImageService _cameraImageService;
   late CameraService _cameraService;
+  late CommunicationService _communicationService;
   StreamSubscription<Command>? _commandSubscription;
+  StreamSubscription<String>? _messageSubscription;
   
   bool _isMicOn = false;
   bool _isCameraOn = true;
@@ -39,7 +43,6 @@ class _ChatScreenState extends State<ChatScreen> {
   int _imageCount = 0;
   final TextEditingController _inputController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
-  Timer? _simulateTimer;
 
   @override
   void initState() {
@@ -51,13 +54,37 @@ class _ChatScreenState extends State<ChatScreen> {
     _commandReceiverService = locator<CommandReceiverService>();
     _cameraImageService = locator<CameraImageService>();
     _cameraService = locator<CameraService>();
+    _communicationService = locator<CommunicationService>();
     
     _subscribeToCommands();
+    _subscribeToMessages();
     _initializeCamera();
-    
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_pendingSpeechText.isEmpty && _messages.isEmpty) {
-        _simulateSpeechRecognition();
+    _connectToServer();
+  }
+  
+  Future<void> _connectToServer() async {
+    bool connected = await _communicationService.connect();
+    if (connected) {
+      debugPrint('已连接到后端服务器');
+      _startMessageReceiver();
+    } else {
+      debugPrint('连接后端服务器失败');
+    }
+  }
+  
+  void _startMessageReceiver() {
+    if (_messageReceiverService is MessageReceiverServiceImpl) {
+      (_messageReceiverService as MessageReceiverServiceImpl).startListening();
+    }
+  }
+  
+  void _subscribeToMessages() {
+    _messageSubscription = _communicationService.messageStream.listen((message) {
+      if (mounted) {
+        setState(() {
+          _messages.add(ChatMessage(text: message, isUser: false));
+        });
+        _scrollToBottom();
       }
     });
   }
@@ -100,13 +127,37 @@ class _ChatScreenState extends State<ChatScreen> {
       _cameraLogs.add(CameraLog(
         timestamp: timestamp,
         imageCount: _imageCount,
-        status: '发送成功',
+        status: '发送中...',
         triggerType: triggerType,
       ));
     });
     
-    _cameraImageService.analyzeImage('camera_frame_data').then((analysisResult) {
-      debugPrint('图像分析结果: $analysisResult');
+    _cameraService.captureImage().then((imageData) async {
+      if (imageData != null) {
+        if (_communicationService.isConnected) {
+          try {
+            await _communicationService.sendImage(imageData);
+            setState(() {
+              _cameraLogs.last.status = '发送成功';
+            });
+          } catch (e) {
+            setState(() {
+              _cameraLogs.last.status = '发送失败: $e';
+            });
+          }
+        } else {
+          _cameraImageService.analyzeImage('camera_frame_data').then((analysisResult) {
+            debugPrint('图像分析结果: $analysisResult');
+            setState(() {
+              _cameraLogs.last.status = '发送成功';
+            });
+          });
+        }
+      } else {
+        setState(() {
+          _cameraLogs.last.status = '捕获失败';
+        });
+      }
     });
   }
 
@@ -116,9 +167,13 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollController.dispose();
     _speechService.dispose();
     _commandReceiverService.dispose();
+    if (_messageReceiverService is MessageReceiverServiceImpl) {
+      (_messageReceiverService as MessageReceiverServiceImpl).dispose();
+    }
     _cameraService.dispose();
+    _communicationService.dispose();
     _commandSubscription?.cancel();
-    _simulateTimer?.cancel();
+    _messageSubscription?.cancel();
     super.dispose();
   }
 
@@ -231,16 +286,25 @@ class _ChatScreenState extends State<ChatScreen> {
     });
     _scrollToBottom();
     
-    _messageReceiverService.receiveMessage(text).then((replyText) {
-      if (mounted) {
-        final replyMsg = ChatMessage(
-          text: replyText,
-          isUser: false,
-        );
-        setState(() => _messages.add(replyMsg));
-        _scrollToBottom();
-      }
-    });
+    if (_communicationService.isConnected) {
+      _communicationService.sendTextMessage(text).then((reply) {
+        // 回复通过 messageStream 接收
+      }).catchError((error) {
+        debugPrint('发送消息失败: $error');
+        return '';
+      });
+    } else {
+      _messageReceiverService.receiveMessage(text).then((replyText) {
+        if (mounted) {
+          final replyMsg = ChatMessage(
+            text: replyText,
+            isUser: false,
+          );
+          setState(() => _messages.add(replyMsg));
+          _scrollToBottom();
+        }
+      });
+    }
   }
 
   void _sendPendingSpeech() {
@@ -248,16 +312,6 @@ class _ChatScreenState extends State<ChatScreen> {
     _sendUserMessage(_pendingSpeechText);
     setState(() {
       _pendingSpeechText = '';
-    });
-  }
-
-  void _simulateSpeechRecognition() {
-    _simulateTimer = Timer(const Duration(seconds: 2), () {
-      if (mounted) {
-        setState(() {
-          _pendingSpeechText = '你好，我想问一下天气怎么样？';
-        });
-      }
     });
   }
 
@@ -599,7 +653,7 @@ enum CameraTriggerType {
 class CameraLog {
   final int timestamp;
   final int imageCount;
-  final String status;
+  String status;
   final CameraTriggerType triggerType;
   
   CameraLog({
