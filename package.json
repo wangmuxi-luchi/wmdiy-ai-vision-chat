@@ -1,0 +1,18 @@
+{
+  "name": "ai-vision-chat-assistant",
+  "version": "1.0.0",
+  "description": "AI 视觉对话助手 — 基于阶跃星辰多模态 API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "openai": "^4.67.0",
+    "sharp": "^0.33.5",
+    "stepfun-realtime-api": "^0.1.1",
+    "ws": "^8.18.0"
+  }
+}

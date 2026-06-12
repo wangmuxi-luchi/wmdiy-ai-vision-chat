@@ -28,6 +28,10 @@ backend/*.egg-info/
 *.swo
 *~
 
+# Node.js
+node_modules/
+tmp/
+
 # OS
 .DS_Store
 Thumbs.db

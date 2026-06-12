@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>AI 视觉对话助手</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+  <!-- 权限引导 -->
+  <div class="perm-screen" id="permScreen">
+    <div class="perm-card">
+      <svg class="perm-logo" viewBox="0 0 64 64" fill="none">
+        <circle cx="32" cy="32" r="30" stroke="#6366f1" stroke-width="2.5"/>
+        <circle cx="22" cy="26" r="6" stroke="#818cf8" stroke-width="2" fill="none"/>
+        <path d="M12 48c0-8 5.4-14 10-14s10 6 10 14" stroke="#818cf8" stroke-width="2" fill="none"/>
+        <circle cx="42" cy="26" r="6" stroke="#818cf8" stroke-width="2" fill="none"/>
+        <path d="M32 48c0-8 5.4-14 10-14s10 6 10 14" stroke="#818cf8" stroke-width="2" fill="none"/>
+      </svg>
+      <h2>AI 视觉对话助手</h2>
+      <p>AI 通过摄像头看到你，通过麦克风听到你，实时对话</p>
+      <div class="perm-items">
+        <div class="perm-item">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#818cf8" stroke-width="1.5"><rect x="2" y="4" width="20" height="16" rx="3"/><circle cx="12" cy="12" r="3"/></svg>
+          <span>摄像头 — AI 看到你的画面</span>
+        </div>
+        <div class="perm-item">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#818cf8" stroke-width="1.5"><rect x="9" y="1" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0014 0"/></svg>
+          <span>麦克风 — AI 听到你的声音</span>
+        </div>
+      </div>
+      <button id="startBtn" class="start-btn">开启对话</button>
+      <div class="perm-err hidden" id="permErr"></div>
+    </div>
+  </div>
+
+  <!-- 主界面 -->
+  <div class="app hidden" id="mainApp">
+    <!-- 摄像头全屏 -->
+    <div class="cam-bg">
+      <video id="camVideo" autoplay playsinline muted></video>
+      <canvas id="camCanvas" hidden></canvas>
+    </div>
+
+    <!-- 画面描述 -->
+    <div class="vision-bar hidden" id="visionBar"></div>
+
+    <!-- 对话区 -->
+    <div class="chat-zone" id="chatZone">
+      <div class="msg-list" id="msgList">
+        <div class="msg msg-ai">你好！我看到你了。我们开始聊天吧～</div>
+      </div>
+      <div class="typing hidden" id="typingDots">
+        <span></span><span></span><span></span>
+      </div>
+    </div>
+
+    <!-- 音频电平指示器 -->
+    <div class="audio-meter" id="audioMeter">
+      <div class="meter-bar" id="meterBar"></div>
+      <span class="meter-label" id="meterLabel">准备中</span>
+    </div>
+
+    <!-- 底部控制 -->
+    <div class="ctrl-bar">
+      <button id="micBtn" class="ctrl-btn" title="静音/取消静音">
+        <svg class="icon-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="1" width="6" height="12" rx="3"/>
+          <path d="M5 11a7 7 0 0014 0"/>
+          <line x1="12" y1="19" x2="12" y2="23"/>
+          <line x1="8" y1="23" x2="16" y2="23"/>
+        </svg>
+      </button>
+      <button id="camBtn" class="ctrl-btn on" title="摄像头开/关">
+        <svg class="icon-cam" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="4" width="20" height="16" rx="3"/>
+          <circle cx="12" cy="12" r="3"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- 顶部状态 -->
+    <div class="top-bar">
+      <span class="dot" id="connDot"></span>
+      <span id="connText">连接中</span>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
