@@ -72,14 +72,20 @@ wss.on('connection', (ws) => {
           ws.send(JSON.stringify({ type: 'pong' }));
           break;
         case 'frame':
+          console.log(`[Frame] 收到图像数据: ${sid} | Base64长度: ${msg.data?.length || 0}`);
           await handleFrame(sid, msg.data, ws);
           break;
         case 'audio':
+          console.log(`[Audio] 收到音频数据: ${sid} | Base64长度: ${msg.data?.length || 0}`);
           handleAudio(sid, msg.data, rtMgr, ws);
           break;
         case 'test_chat':
+        case 'text':
+          console.log(`[Chat] 收到文本消息: ${sid} | 内容: "${msg.data?.substring(0, 50) || ''}${msg.data?.length > 50 ? '...' : ''}"`);
           await handleChat(sid, msg.data, ws);
           break;
+        default:
+          console.log(`[WS] 未知消息类型: ${sid} | type: ${msg.type}`);
       }
     } catch (e) { console.error(`[WS] 错误:`, e.message); }
   });
@@ -101,6 +107,8 @@ async function handleFrame(sid, b64, ws) {
   try {
     const buf = Buffer.from(b64, 'base64');
     const resized = await sharp(buf).resize(512, 512, { fit: 'inside' }).jpeg({ quality: 70 }).toBuffer();
+    console.log(`[Frame] 图像压缩完成: ${sid} | 压缩后大小: ${resized.length} 字节`);
+    
     const start = Date.now();
     const r = await openaiClient.chat.completions.create({
       model: 'step-3.7-flash',
@@ -119,7 +127,11 @@ async function handleFrame(sid, b64, ws) {
     console.log(`[Frame] ${sid} 分析完成 (${elapsed}ms): ${desc.substring(0, 50)}`);
     ws.send(JSON.stringify({ type: 'frame_analyzed', description: desc, timestamp: Date.now() }));
     EventBus.emit('frame_analyzed', { sessionId: sid, description: desc, timestamp: Date.now() });
-  } catch (e) { console.error('[Frame]', e.message); }
+  } catch (e) { 
+    console.error('[Frame] 分析失败:', e.message); 
+    response = '分析失败: ' + e.message;
+    ws.send(JSON.stringify({ type: 'frame_analyzed', description: response, timestamp: Date.now() }));
+  }
 }
 
 // ── 实时音频 → 阶跃星辰 Realtime ──
@@ -134,7 +146,12 @@ function handleAudio(sid, b64, rtMgr, ws) {
 
 // ── 文字聊天 ──
 async function handleChat(sid, text, ws) {
-  if (!text?.trim()) return;
+  if (!text?.trim()) {
+    console.log(`[Chat] 空消息跳过: ${sid}`);
+    return;
+  }
+  
+  console.log(`[Chat] 收到用户消息: ${sid} | 内容: "${text}"`);
   EventBus.emit('user_speech', { sessionId: sid, text, timestamp: Date.now() });
 
   let reply;
@@ -149,12 +166,14 @@ async function handleChat(sid, text, ws) {
         reasoning_effort: 'low',
       });
       reply = r.choices[0]?.message?.content || '抱歉，请再说一次。';
+      console.log(`[Chat] AI回复完成: ${sid} | 结果: "${reply}"`);
     } catch (e) {
       console.error('[Chat]', e.message);
       reply = '抱歉，暂时无法回应。';
     }
   }
   EventBus.emit('assistant_reply', { sessionId: sid, text: reply, timestamp: Date.now() });
+  console.log(`[Chat] 回复已发送: ${sid}`);
 }
 
 // ── 全局事件 → 对应浏览器 ──

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import '../communication_service.dart';
@@ -53,6 +54,9 @@ class WebSocketCommunicationService implements CommunicationService {
         if (jsonData['type'] == 'message') {
           Logger.d('WebSocket', '消息内容: ${jsonData['content']}');
           _messageController.add(jsonData['content']);
+        } else if (jsonData['type'] == 'assistant_message') {
+          Logger.d('WebSocket', '助手回复: ${jsonData['text']}');
+          _messageController.add(jsonData['text']);
         } else if (jsonData['type'] == 'command') {
           Logger.d('WebSocket', '收到命令: ${jsonData['data']}');
           _commandController.add(jsonData['data']);
@@ -104,12 +108,12 @@ class WebSocketCommunicationService implements CommunicationService {
   Future<String> sendTextMessage(String message) async {
     if (!_isConnected || _channel == null) {
       Logger.e('WebSocket', '发送失败：未连接到服务器');
-      throw Exception('Not connected to server');
+      return '发送失败：未连接到服务器';
     }
     
     final request = jsonEncode({
       'type': 'text',
-      'content': message,
+      'data': message,
     });
     
     Logger.d('WebSocket', '发送文本消息: "${message.substring(0, message.length > 50 ? 50 : message.length)}${message.length > 50 ? '...' : ''}"');
@@ -125,23 +129,33 @@ class WebSocketCommunicationService implements CommunicationService {
       subscription?.cancel();
     });
     
-    return completer.future.timeout(const Duration(seconds: 30));
+    try {
+      return await completer.future.timeout(const Duration(seconds: 15));
+    } catch (e) {
+      Logger.e('WebSocket', '消息发送超时: $e');
+      subscription?.cancel();
+      return '发送超时，请稍后重试';
+    }
   }
 
   @override
   Future<String> sendImage(Uint8List imageData) async {
     if (!_isConnected || _channel == null) {
       Logger.e('WebSocket', '发送失败：未连接到服务器');
-      throw Exception('Not connected to server');
+      return '发送失败：未连接到服务器';
     }
     
-    final base64Image = base64Encode(imageData);
+    Logger.d('WebSocket', '开始处理图像: ${imageData.length} 字节');
+    
+    final base64Image = await compute(_encodeBase64, imageData);
+    Logger.d('WebSocket', 'Base64编码完成: ${base64Image.length} 字符');
+    
     final request = jsonEncode({
       'type': 'frame',
       'data': base64Image,
     });
     
-    Logger.d('WebSocket', '发送图像: ${imageData.length} 字节 (Base64: ${base64Image.length} 字符)');
+    Logger.d('WebSocket', '发送图像: ${imageData.length} 字节');
     
     _channel!.sink.add(request);
     
@@ -153,7 +167,17 @@ class WebSocketCommunicationService implements CommunicationService {
       subscription?.cancel();
     });
     
-    return completer.future.timeout(const Duration(seconds: 30));
+    try {
+      return await completer.future.timeout(const Duration(seconds: 15));
+    } catch (e) {
+      Logger.e('WebSocket', '图像发送超时: $e');
+      subscription?.cancel();
+      return '图像发送超时，请稍后重试';
+    }
+  }
+  
+  static String _encodeBase64(Uint8List data) {
+    return base64Encode(data);
   }
 
   @override
