@@ -1,0 +1,33 @@
+plugins {
+    id ('com.android.application')
+    id ('kotlin-android')
+    id ('dev.flutter.flutter-gradle-plugin')
+}
+
+
+android {
+    namespace = "com.tencent.cloud.asr.plugin.asr_plugin_example"
+    compileSdk = flutter.compileSdkVersion
+    ndkVersion = flutter.ndkVersion
+
+
+    defaultConfig {
+//        applicationId "com.tencent.cloud.asr.plugin.asr_plugin_example"
+        minSdk = 24//flutter.minSdkVersion
+        targetSdk = flutter.targetSdkVersion
+        versionCode = flutter.versionCode
+        versionName = flutter.versionName
+    }
+
+    buildTypes {
+        release {
+            // TODO: Add your own signing config for the release build.
+            // Signing with the debug keys for now, so `flutter run --release` works.
+            signingConfig signingConfigs.debug
+        }
+    }
+}
+
+flutter {
+    source '../..'
+}
