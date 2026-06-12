@@ -101,12 +101,22 @@ async function handleFrame(sid, b64, ws) {
   try {
     const buf = Buffer.from(b64, 'base64');
     const resized = await sharp(buf).resize(512, 512, { fit: 'inside' }).jpeg({ quality: 70 }).toBuffer();
+    const start = Date.now();
     const r = await openaiClient.chat.completions.create({
       model: 'step-3.7-flash',
-      messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${resized.toString('base64')}`, detail: 'low' } }, { type: 'text', text: '用中文一句话描述摄像头画面。' }] }],
-      max_tokens: 100,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${resized.toString('base64')}` } },
+          { type: 'text', text: '简单描述画面内容，一句话即可。' },
+        ],
+      }],
+      max_tokens: 300,
+      reasoning_effort: 'low',
     });
-    const desc = r.choices[0]?.message?.content || '无法分析';
+    const elapsed = Date.now() - start;
+    const desc = r.choices[0]?.message?.content || '分析中...';
+    console.log(`[Frame] ${sid} 分析完成 (${elapsed}ms): ${desc.substring(0, 50)}`);
     ws.send(JSON.stringify({ type: 'frame_analyzed', description: desc, timestamp: Date.now() }));
     EventBus.emit('frame_analyzed', { sessionId: sid, description: desc, timestamp: Date.now() });
   } catch (e) { console.error('[Frame]', e.message); }
@@ -135,7 +145,8 @@ async function handleChat(sid, text, ws) {
       const r = await openaiClient.chat.completions.create({
         model: 'step-3.7-flash',
         messages: [{ role: 'system', content: '你是AI视觉对话助手，用中文简洁回应，2-3句话。' }, { role: 'user', content: text }],
-        max_tokens: 300,
+        max_tokens: 500,
+        reasoning_effort: 'low',
       });
       reply = r.choices[0]?.message?.content || '抱歉，请再说一次。';
     } catch (e) {
