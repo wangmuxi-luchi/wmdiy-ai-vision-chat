@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:camera/camera.dart';
 import 'services/locator.dart';
+import 'services/config_service.dart';
 import 'services/speech_recognition_service.dart';
 import 'services/text_processor_service.dart';
 import 'services/message_receiver_service.dart';
@@ -12,6 +14,7 @@ import 'services/command_receiver_service.dart';
 import 'services/camera_image_service.dart';
 import 'services/camera_service.dart';
 import 'services/communication_service.dart';
+import 'widgets/sidebar.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -28,6 +31,7 @@ class _ChatScreenState extends State<ChatScreen> {
   late CameraImageService _cameraImageService;
   late CameraService _cameraService;
   late CommunicationService _communicationService;
+  late ConfigService _configService;
   StreamSubscription<Command>? _commandSubscription;
   StreamSubscription<String>? _messageSubscription;
   
@@ -35,6 +39,9 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _isCameraOn = true;
   bool _isFullscreen = false;
   bool _isCameraInitialized = false;
+  bool _isSidebarOpen = false;
+  bool _isAutoSendSpeech = false; // 语音转文字自动发送开关
+  bool _isStoppingRecording = false; // 是否正在停止录音（用于防止关闭麦克风时接收缓存结果）
   int _cameraPreviewKey = 0;
 
   String _pendingSpeechText = '';
@@ -42,24 +49,48 @@ class _ChatScreenState extends State<ChatScreen> {
   final List<CameraLog> _cameraLogs = [];
   int _imageCount = 0;
   final TextEditingController _inputController = TextEditingController();
+  final TextEditingController _speechInputController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
 
   @override
   void initState() {
     super.initState();
-    setupLocator();
-    _speechService = locator<SpeechRecognitionService>();
-    _textProcessorService = locator<TextProcessorService>();
-    _messageReceiverService = locator<MessageReceiverService>();
-    _commandReceiverService = locator<CommandReceiverService>();
-    _cameraImageService = locator<CameraImageService>();
-    _cameraService = locator<CameraService>();
-    _communicationService = locator<CommunicationService>();
-    
-    _subscribeToCommands();
-    _subscribeToMessages();
-    _initializeCamera();
-    _connectToServer();
+    _initAsync();
+  }
+  
+  Future<void> _initAsync() async {
+    try {
+      setupLocator();
+      _speechService = locator<SpeechRecognitionService>();
+      _textProcessorService = locator<TextProcessorService>();
+      _messageReceiverService = locator<MessageReceiverService>();
+      _commandReceiverService = locator<CommandReceiverService>();
+      _cameraImageService = locator<CameraImageService>();
+      _cameraService = locator<CameraService>();
+      _communicationService = locator<CommunicationService>();
+      _configService = locator<ConfigService>();
+      await _configService.init();
+      
+      _subscribeToCommands();
+      _subscribeToMessages();
+      await _initializeCamera();
+      await _connectToServer();
+    } catch (e, stackTrace) {
+      debugPrint('初始化异常: $e\n$stackTrace');
+      _showErrorSnackBar('初始化失败: ${e.toString()}');
+    }
+  }
+  
+  void _showErrorSnackBar(String message) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    }
   }
   
   Future<void> _connectToServer() async {
@@ -149,7 +180,7 @@ class _ChatScreenState extends State<ChatScreen> {
           _cameraImageService.analyzeImage('camera_frame_data').then((analysisResult) {
             debugPrint('图像分析结果: $analysisResult');
             setState(() {
-              _cameraLogs.last.status = '发送成功';
+              _cameraLogs.last.status = '离线分析完成（未发送）';
             });
           });
         }
@@ -192,14 +223,26 @@ class _ChatScreenState extends State<ChatScreen> {
     });
 
     try {
-      Stream<String> asrStream = _speechService.startListening();
+      Stream<ASRResult> asrStream = _speechService.startListening();
       
       asrStream.listen(
-        (text) {
-          if (mounted) {
-            setState(() {
-              _pendingSpeechText = text;
-            });
+        (result) {
+          // 如果正在停止录音，忽略收到的数据（可能是SDK缓存的旧数据）
+          if (!mounted || _isStoppingRecording) {
+            return;
+          }
+          
+          String text = result.text;
+          bool isFinal = result.isFinal ?? false;
+          
+          setState(() {
+            _pendingSpeechText = text;
+            _speechInputController.text = text;
+          });
+          
+          // 如果开启自动发送且收到最终结果，立即发送
+          if (_isAutoSendSpeech && isFinal && text.trim().isNotEmpty) {
+            _sendPendingSpeech();
           }
         },
         onError: (e) {
@@ -229,11 +272,17 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _stopRecording() async {
+    setState(() {
+      _isStoppingRecording = true;
+    });
     try {
       await _speechService.stopListening();
     } catch (e) {
       debugPrint("Error stopping recording: $e");
     }
+    setState(() {
+      _isStoppingRecording = false;
+    });
   }
 
   void _toggleCamera() {
@@ -312,6 +361,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _sendUserMessage(_pendingSpeechText);
     setState(() {
       _pendingSpeechText = '';
+      _speechInputController.clear();
     });
   }
 
@@ -327,11 +377,19 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  void _toggleSidebar() {
+    setState(() => _isSidebarOpen = !_isSidebarOpen);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: _isFullscreen ? null : AppBar(
         title: const Text('语音视频聊天助手'),
+        leading: IconButton(
+          icon: const Icon(Icons.menu),
+          onPressed: _toggleSidebar,
+        ),
         actions: [
           IconButton(
             icon: Icon(_isMicOn ? Icons.mic : Icons.mic_off),
@@ -344,7 +402,28 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         ],
       ),
-      body: _isFullscreen ? _buildFullscreenCamera() : _buildNormalLayout(),
+      body: Stack(
+        children: [
+          _isFullscreen ? _buildFullscreenCamera() : _buildNormalLayout(),
+          if (_isSidebarOpen)
+            Stack(
+              children: [
+                GestureDetector(
+                  onTap: _toggleSidebar,
+                  child: Container(
+                    color: Colors.black38,
+                    width: double.infinity,
+                    height: double.infinity,
+                  ),
+                ),
+                Sidebar(
+                  isOpen: _isSidebarOpen,
+                  onToggle: _toggleSidebar,
+                ),
+              ],
+            ),
+        ],
+      ),
     );
   }
 
@@ -540,28 +619,40 @@ class _ChatScreenState extends State<ChatScreen> {
       child: Row(
         children: [
           IconButton(
-            icon: Icon(_isMicOn ? Icons.mic : Icons.mic_off),
-            color: _isMicOn ? Colors.red : Colors.grey,
-            onPressed: _toggleMic,
-            tooltip: _isMicOn ? '关闭麦克风' : '开启麦克风',
+            icon: Icon(
+              _isAutoSendSpeech ? Icons.check_circle : Icons.circle_outlined,
+              color: _isAutoSendSpeech ? Colors.green : Colors.grey,
+            ),
+            onPressed: () {
+              setState(() {
+                _isAutoSendSpeech = !_isAutoSendSpeech;
+              });
+            },
+            tooltip: _isAutoSendSpeech ? '关闭自动发送' : '开启自动发送',
           ),
           const SizedBox(width: 8),
           Expanded(
             child: TextField(
-              controller: TextEditingController(text: _pendingSpeechText),
+              controller: _speechInputController,
               decoration: const InputDecoration(
                 hintText: '语音识别结果（未发送）...',
                 border: InputBorder.none,
+                contentPadding: EdgeInsets.zero,
               ),
               style: const TextStyle(fontSize: 16),
               maxLines: null,
               onChanged: (text) {
-                setState(() {
-                  _pendingSpeechText = text;
+                SchedulerBinding.instance.addPostFrameCallback((_) {
+                  if (mounted) {
+                    setState(() {
+                      _pendingSpeechText = text;
+                    });
+                  }
                 });
               },
             ),
           ),
+          const SizedBox(width: 8),
           IconButton(
             icon: const Icon(Icons.send, color: Colors.blue),
             onPressed: _sendPendingSpeech,

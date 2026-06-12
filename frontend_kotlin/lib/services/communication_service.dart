@@ -9,6 +9,8 @@ abstract class CommunicationService {
   
   Future<String> sendImage(Uint8List imageData);
   
+  Future<void> updateConnection(String host, int port);
+  
   Stream<String> get messageStream;
   
   Stream<Map<String, dynamic>> get commandStream;

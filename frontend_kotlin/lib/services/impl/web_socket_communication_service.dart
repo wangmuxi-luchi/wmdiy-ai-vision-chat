@@ -1,56 +1,266 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import '../communication_service.dart';
 import '../../utils/logger.dart';
 
+enum ConnectionState { connecting, connected, disconnected, reconnecting }
+
 class WebSocketCommunicationService implements CommunicationService {
-  final String _host;
-  final int _port;
-  WebSocketChannel? _channel;
-  final StreamController<String> _messageController = StreamController<String>.broadcast();
-  final StreamController<Map<String, dynamic>> _commandController = StreamController<Map<String, dynamic>>.broadcast();
-  bool _isConnected = false;
+  // 核心组件
+  WebSocket? _webSocket;
+  Timer? _heartbeatTimer;
   Timer? _reconnectTimer;
-  StreamSubscription? _channelSubscription;
+  final _messageController = StreamController<String>.broadcast();
+  final _commandController = StreamController<Map<String, dynamic>>.broadcast();
+  final _stateController = StreamController<ConnectionState>.broadcast();
+
+  // 配置
+  String _url;
+  Duration _currentDelay;
+  int _reconnectAttempts = 0;
+  bool _isReconnecting = false;
+  bool _isClosed = false;
+  bool _isChanging = false;
+
+  final Duration _initialReconnectDelay;
+  final Duration _maxReconnectDelay;
+  final Duration _heartbeatInterval;
+  final Duration _heartbeatTimeout;
 
   WebSocketCommunicationService({String? host, int? port})
-      : _host = host ?? dotenv.env['BACKEND_HOST'] ?? '192.168.1.100',
-        _port = port ?? int.tryParse(dotenv.env['BACKEND_PORT'] ?? '8000') ?? 8000;
+      : _initialReconnectDelay = const Duration(seconds: 1),
+        _maxReconnectDelay = const Duration(minutes: 1),
+        _heartbeatInterval = const Duration(seconds: 30),
+        _heartbeatTimeout = const Duration(seconds: 10),
+        _currentDelay = const Duration(seconds: 1),
+        _url = _buildUrl(host ?? dotenv.env['BACKEND_HOST'] ?? 'localhost', port ?? int.tryParse(dotenv.env['BACKEND_PORT'] ?? '8000') ?? 8000);
+
+  static String _buildUrl(String host, int port) {
+    return 'ws://$host:$port/ws';
+  }
+
+  Stream<ConnectionState> get stateStream => _stateController.stream;
+
+  String get currentUrl => _url;
+
+  /// 运行时修改 WebSocket 服务器地址（IP/端口等）
+  /// 会断开当前连接，清除所有重连状态，并使用新 URL 重新连接
+  Future<void> changeUrl(String newUrl) async {
+    if (_url == newUrl) return;
+    if (_isChanging) return;
+
+    _isChanging = true;
+    Logger.i('WebSocket', '🔁 切换 WebSocket URL: $_url -> $newUrl');
+    _url = newUrl;
+
+    // 断开当前连接并取消所有重连/心跳定时器
+    await _disconnect();
+    await _cleanupResources();
+
+    // 重置重连相关状态
+    _reconnectAttempts = 0;
+    _isReconnecting = false;
+    _currentDelay = _initialReconnectDelay;
+    _isClosed = false;
+
+    // 发起新连接
+    await connect();
+    _isChanging = false;
+  }
+
+  Future<void> updateConnection(String host, int port) async {
+    final newUrl = _buildUrl(host, port);
+    await changeUrl(newUrl);
+  }
+
+  // ==================== CommunicationService 接口实现 ====================
 
   @override
   Future<bool> connect() async {
+    if (_isClosed) {
+      Logger.w('WebSocket', 'Manager已关闭，无法连接');
+      return false;
+    }
+    if (_webSocket != null) {
+      Logger.w('WebSocket', '已经处于连接或连接中状态');
+      return _isConnected();
+    }
+
+    await _cleanupResources();
+    _updateState(ConnectionState.connecting);
+    _reconnectAttempts = 0;
+    _isReconnecting = false;
+    _currentDelay = _initialReconnectDelay;
+
+    Logger.d('WebSocket', '正在连接: $_url');
+
     try {
-      final url = Uri.parse('ws://$_host:$_port/ws');
-      Logger.d('WebSocket', '正在连接: $url');
-      
-      _channel = WebSocketChannel.connect(url);
-      _isConnected = true;
-      Logger.d('WebSocket', '连接成功');
-      
-      _channelSubscription = _channel!.stream.listen(
-        (data) => _handleMessage(data),
-        onError: (error) => _handleError(error),
-        onDone: () => _handleDisconnect(),
+      _webSocket = await WebSocket.connect(_url).timeout(
+        const Duration(seconds: 10),
+        onTimeout: () => throw TimeoutException('WebSocket 连接超时 (10秒)'),
       );
-      
+      _onConnected();
       return true;
     } catch (e) {
       Logger.e('WebSocket', '连接失败: $e');
-      _scheduleReconnect();
+      _onConnectionError(e);
       return false;
     }
+  }
+
+  @override
+  Future<void> disconnect() async {
+    Logger.d('WebSocket', '主动断开连接');
+    _isClosed = false;
+    await _disconnect();
+    await _cleanupResources();
+    _updateState(ConnectionState.disconnected);
+  }
+
+  @override
+  Future<String> sendTextMessage(String message) async {
+    if (!_isConnected()) {
+      Logger.e('WebSocket', '发送失败：未连接到服务器');
+      return '发送失败：未连接到服务器';
+    }
+
+    final request = jsonEncode({
+      'type': 'text',
+      'data': message,
+    });
+
+    Logger.d('WebSocket', '发送文本消息: "${message.substring(0, message.length > 50 ? 50 : message.length)}${message.length > 50 ? '...' : ''}"');
+
+    try {
+      _webSocket!.add(request);
+    } catch (e) {
+      Logger.e('WebSocket', '发送失败: $e');
+      return '发送失败: $e';
+    }
+
+    final completer = Completer<String>();
+    StreamSubscription? subscription;
+    subscription = _messageController.stream.listen((response) {
+      Logger.d('WebSocket', '收到回复: "${response.substring(0, response.length > 50 ? 50 : response.length)}${response.length > 50 ? '...' : ''}"');
+      completer.complete(response);
+      subscription?.cancel();
+    });
+
+    try {
+      return await completer.future.timeout(const Duration(seconds: 15));
+    } catch (e) {
+      Logger.e('WebSocket', '消息发送超时: $e');
+      subscription?.cancel();
+      return '发送超时，请稍后重试';
+    }
+  }
+
+  @override
+  Future<String> sendImage(Uint8List imageData) async {
+    if (!_isConnected()) {
+      Logger.e('WebSocket', '发送失败：未连接到服务器');
+      return '发送失败：未连接到服务器';
+    }
+
+    Logger.d('WebSocket', '开始处理图像: ${imageData.length} 字节');
+
+    final base64Image = base64Encode(imageData);
+    Logger.d('WebSocket', 'Base64编码完成: ${base64Image.length} 字符');
+
+    final request = jsonEncode({
+      'type': 'frame',
+      'data': base64Image,
+    });
+
+    Logger.d('WebSocket', '发送图像: ${imageData.length} 字节');
+
+    try {
+      _webSocket!.add(request);
+    } catch (e) {
+      Logger.e('WebSocket', '发送失败: $e');
+      return '发送失败: $e';
+    }
+
+    final completer = Completer<String>();
+    StreamSubscription? subscription;
+    subscription = _messageController.stream.listen((response) {
+      Logger.d('WebSocket', '图像分析结果: "${response.substring(0, response.length > 100 ? 100 : response.length)}${response.length > 100 ? '...' : ''}"');
+      completer.complete(response);
+      subscription?.cancel();
+    });
+
+    try {
+      return await completer.future.timeout(const Duration(seconds: 15));
+    } catch (e) {
+      Logger.e('WebSocket', '图像发送超时: $e');
+      subscription?.cancel();
+      return '图像发送超时，请稍后重试';
+    }
+  }
+
+  @override
+  Stream<String> get messageStream => _messageController.stream;
+
+  @override
+  Stream<Map<String, dynamic>> get commandStream => _commandController.stream;
+
+  @override
+  bool get isConnected => _isConnected();
+
+  @override
+  void dispose() {
+    Logger.d('WebSocket', '释放资源');
+    _isClosed = true;
+    _reconnectTimer?.cancel();
+    _heartbeatTimer?.cancel();
+    try {
+      if (_webSocket != null && _webSocket!.readyState != WebSocket.closed) {
+        _webSocket!.close();
+      }
+    } catch (_) {}
+    _webSocket = null;
+    _messageController.close();
+    _commandController.close();
+    _stateController.close();
+  }
+
+  // ==================== 私有方法 ====================
+
+  bool _isConnected() => _webSocket != null && (_webSocket!.readyState == WebSocket.open);
+
+  void _onConnected() {
+    _updateState(ConnectionState.connected);
+    _reconnectAttempts = 0;
+    _isReconnecting = false;
+    _currentDelay = _initialReconnectDelay;
+    _startHeartbeat();
+    _startListening();
+    Logger.i('WebSocket', '✅ 连接成功 ($_url)');
+  }
+
+  void _startListening() {
+    if (_webSocket == null) return;
+
+    _webSocket!.listen(
+      (data) => _handleMessage(data),
+      onError: (error) => _handleError(error),
+      onDone: () => _handleDone(),
+    );
   }
 
   void _handleMessage(dynamic data) {
     try {
       if (data is String) {
         Logger.d('WebSocket', '收到消息: ${data.length} 字符');
+        if (data == 'pong') {
+          return;
+        }
         final jsonData = jsonDecode(data);
-        
+
         if (jsonData['type'] == 'message') {
           Logger.d('WebSocket', '消息内容: ${jsonData['content']}');
           _messageController.add(jsonData['content']);
@@ -69,133 +279,139 @@ class WebSocketCommunicationService implements CommunicationService {
       }
     } catch (e) {
       Logger.w('WebSocket', '消息解析失败: $e');
-      _messageController.add(data.toString());
+      if (data is String) {
+        _messageController.add(data);
+      }
     }
   }
 
   void _handleError(dynamic error) {
     Logger.e('WebSocket', '连接错误: $error');
-    _isConnected = false;
-    _scheduleReconnect();
+    _isReconnecting = false;
+    _onDisconnected();
   }
 
-  void _handleDisconnect() {
+  void _handleDone() {
     Logger.w('WebSocket', '连接断开');
-    _isConnected = false;
-    _scheduleReconnect();
+    _onDisconnected();
+  }
+
+  void _onDisconnected() async {
+    if (!_isClosed && !_isReconnecting) {
+      if (!await _hasNetworkConnectivity()) {
+        Logger.w('WebSocket', '📡 无网络连接，等待网络恢复...');
+        _waitForNetworkAndReconnect();
+      } else if (_reconnectAttempts < 10) {
+        _scheduleReconnect();
+      } else {
+        Logger.e('WebSocket', '❌ 已达最大重试次数 (10)，停止重连');
+        _updateState(ConnectionState.disconnected);
+      }
+    }
   }
 
   void _scheduleReconnect() {
+    if (_isClosed || _isReconnecting) return;
+    _isReconnecting = true;
+    _updateState(ConnectionState.reconnecting);
     _reconnectTimer?.cancel();
-    _reconnectTimer = Timer(const Duration(seconds: 5), () async {
-      if (!_isConnected) {
-        Logger.i('WebSocket', '尝试重新连接...');
-        await connect();
+
+    Logger.i('WebSocket', '🔄 将在 ${_currentDelay.inSeconds}秒 后尝试第 ${_reconnectAttempts + 1} 次重连 ($_url)');
+
+    _reconnectTimer = Timer(_currentDelay, () async {
+      try {
+        await _reconnect();
+      } finally {
+        _reconnectTimer = null;
       }
     });
   }
 
-  @override
-  Future<void> disconnect() async {
-    Logger.d('WebSocket', '主动断开连接');
-    _reconnectTimer?.cancel();
-    await _channelSubscription?.cancel();
-    _channel?.sink.close();
-    _isConnected = false;
-  }
+  Future<void> _reconnect() async {
+    if (_isClosed) return;
+    await _cleanupResources();
+    _reconnectAttempts++;
 
-  @override
-  Future<String> sendTextMessage(String message) async {
-    if (!_isConnected || _channel == null) {
-      Logger.e('WebSocket', '发送失败：未连接到服务器');
-      return '发送失败：未连接到服务器';
-    }
-    
-    final request = jsonEncode({
-      'type': 'text',
-      'data': message,
-    });
-    
-    Logger.d('WebSocket', '发送文本消息: "${message.substring(0, message.length > 50 ? 50 : message.length)}${message.length > 50 ? '...' : ''}"');
-    Logger.d('WebSocket', '数据包: ${request.substring(0, request.length > 100 ? 100 : request.length)}${request.length > 100 ? '...' : ''}');
-    
-    _channel!.sink.add(request);
-    
-    final completer = Completer<String>();
-    StreamSubscription? subscription;
-    subscription = _messageController.stream.listen((response) {
-      Logger.d('WebSocket', '收到回复: "${response.substring(0, response.length > 50 ? 50 : response.length)}${response.length > 50 ? '...' : ''}"');
-      completer.complete(response);
-      subscription?.cancel();
-    });
-    
     try {
-      return await completer.future.timeout(const Duration(seconds: 15));
+      _webSocket = await WebSocket.connect(_url).timeout(const Duration(seconds: 10));
+      _onConnected();
     } catch (e) {
-      Logger.e('WebSocket', '消息发送超时: $e');
-      subscription?.cancel();
-      return '发送超时，请稍后重试';
+      Logger.e('WebSocket', '❌ 重连失败 (${_reconnectAttempts}/10): $e');
+      _isReconnecting = false;
+      _currentDelay = Duration(
+        milliseconds: (_currentDelay.inMilliseconds * 2).clamp(0, _maxReconnectDelay.inMilliseconds),
+      );
+      _scheduleReconnect();
     }
   }
 
-  @override
-  Future<String> sendImage(Uint8List imageData) async {
-    if (!_isConnected || _channel == null) {
-      Logger.e('WebSocket', '发送失败：未连接到服务器');
-      return '发送失败：未连接到服务器';
-    }
-    
-    Logger.d('WebSocket', '开始处理图像: ${imageData.length} 字节');
-    
-    final base64Image = await compute(_encodeBase64, imageData);
-    Logger.d('WebSocket', 'Base64编码完成: ${base64Image.length} 字符');
-    
-    final request = jsonEncode({
-      'type': 'frame',
-      'data': base64Image,
-    });
-    
-    Logger.d('WebSocket', '发送图像: ${imageData.length} 字节');
-    
-    _channel!.sink.add(request);
-    
-    final completer = Completer<String>();
-    StreamSubscription? subscription;
-    subscription = _messageController.stream.listen((response) {
-      Logger.d('WebSocket', '图像分析结果: "${response.substring(0, response.length > 100 ? 100 : response.length)}${response.length > 100 ? '...' : ''}"');
-      completer.complete(response);
-      subscription?.cancel();
-    });
-    
-    try {
-      return await completer.future.timeout(const Duration(seconds: 15));
-    } catch (e) {
-      Logger.e('WebSocket', '图像发送超时: $e');
-      subscription?.cancel();
-      return '图像发送超时，请稍后重试';
+  void _onConnectionError(dynamic error) {
+    Logger.e('WebSocket', '❌ 连接失败: $error');
+    _isReconnecting = false;
+    if (error is SocketException || error is TimeoutException) {
+      _scheduleReconnect();
+    } else {
+      Logger.w('WebSocket', '⚠️ 未知错误: $error，放弃重连');
+      _updateState(ConnectionState.disconnected);
     }
   }
-  
-  static String _encodeBase64(Uint8List data) {
-    return base64Encode(data);
-  }
 
-  @override
-  Stream<String> get messageStream => _messageController.stream;
-
-  @override
-  Stream<Map<String, dynamic>> get commandStream => _commandController.stream;
-
-  @override
-  bool get isConnected => _isConnected;
-
-  @override
-  void dispose() {
-    Logger.d('WebSocket', '释放资源');
+  Future<void> _cleanupResources() async {
     _reconnectTimer?.cancel();
-    _channelSubscription?.cancel();
-    _channel?.sink.close();
-    _messageController.close();
-    _commandController.close();
+    _heartbeatTimer?.cancel();
+  }
+
+  Future<void> _disconnect() async {
+    _reconnectTimer?.cancel();
+    _heartbeatTimer?.cancel();
+    if (_webSocket != null) {
+      try {
+        if (_webSocket!.readyState != WebSocket.closed) {
+          await _webSocket!.close();
+        }
+      } catch (_) {}
+      _webSocket = null;
+    }
+  }
+
+  void _startHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(_heartbeatInterval, (timer) async {
+      if (!_isConnected()) return;
+      try {
+        _webSocket!.add('ping');
+      } catch (e) {
+        Logger.e('WebSocket', '💓 心跳失败，检测到连接断开: $e');
+        timer.cancel();
+        _disconnect();
+        _onDisconnected();
+      }
+    });
+  }
+
+  Future<bool> _hasNetworkConnectivity() async {
+    try {
+      final result = await InternetAddress.lookup('example.com');
+      return result.isNotEmpty && result[0].rawAddress.isNotEmpty;
+    } on SocketException catch (_) {
+      return false;
+    }
+  }
+
+  void _waitForNetworkAndReconnect() {
+    const checkInterval = Duration(seconds: 5);
+    Timer.periodic(checkInterval, (timer) async {
+      if (await _hasNetworkConnectivity() && !_isClosed && _webSocket == null) {
+        timer.cancel();
+        Logger.i('WebSocket', '🌐 网络已恢复，尝试重连');
+        _scheduleReconnect();
+      }
+    });
+  }
+
+  void _updateState(ConnectionState state) {
+    if (_stateController.hasListener) {
+      _stateController.add(state);
+    }
   }
 }

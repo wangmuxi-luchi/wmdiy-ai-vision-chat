@@ -6,6 +6,7 @@ import 'command_receiver_service.dart';
 import 'camera_image_service.dart';
 import 'camera_service.dart';
 import 'communication_service.dart';
+import 'config_service.dart';
 import 'impl/asr_speech_recognition_service.dart';
 import 'impl/backend_text_processor_service.dart';
 import 'impl/mock_message_receiver_service.dart';
@@ -21,6 +22,11 @@ import 'impl/mock_communication_service.dart';
 final GetIt locator = GetIt.instance;
 
 void setupLocator({bool useMock = false}) {
+  if (!locator.isRegistered<ConfigService>()) {
+    locator.registerLazySingleton<ConfigService>(
+      () => ConfigService(),
+    );
+  }
   if (!locator.isRegistered<SpeechRecognitionService>()) {
     locator.registerLazySingleton<SpeechRecognitionService>(
       () => ASRSpeechRecognitionService(),

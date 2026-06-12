@@ -1,5 +1,12 @@
+class ASRResult {
+  final String text;
+  final bool isFinal;
+
+  ASRResult(this.text, {this.isFinal = false});
+}
+
 abstract class SpeechRecognitionService {
-  Stream<String> startListening();
+  Stream<ASRResult> startListening();
   Future<void> stopListening();
   void dispose();
 }
