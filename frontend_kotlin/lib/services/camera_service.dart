@@ -1,3 +1,6 @@
+export 'impl/camera_service_impl.dart'
+    if (dart.library.html) 'impl/camera_service_web.dart';
+
 import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';

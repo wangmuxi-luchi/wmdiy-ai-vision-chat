@@ -56,6 +56,7 @@ dependencies:
   
   # 本地存储（持久化配置）
   shared_preferences: ^2.2.3
+  js: ^0.7.2
   
 
 dev_dependencies:
@@ -83,6 +84,9 @@ flutter:
   # Environment variables
   assets:
     - .env
+    - web/third_party/tencentcloud-speech-sdk-js-main/asr/examples/lib/cryptojs.js
+    - web/third_party/tencentcloud-speech-sdk-js-main/asr/dist/speechrecognizer.js
+    - web/third_party/tencentcloud-speech-sdk-js-main/asr/app/webrecorder.js
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
