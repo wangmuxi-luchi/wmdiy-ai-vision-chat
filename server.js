@@ -60,10 +60,15 @@ wss.on('connection', (ws) => {
   }
 
   ws.on('message', async (raw) => {
+    // 二进制帧 → 音频数据（WAV PCM，无 Base64 无 JSON）
+    if (Buffer.isBuffer(raw)) {
+      handleAudioBinary(sid, raw, rtMgr, ws);
+      return;
+    }
+
     let msg;
     try {
-      const str = Buffer.isBuffer(raw) ? raw.toString() : String(raw);
-      msg = JSON.parse(str);
+      msg = JSON.parse(raw.toString());
     } catch { return; }
 
     try {
@@ -73,9 +78,6 @@ wss.on('connection', (ws) => {
           break;
         case 'frame':
           await handleFrame(sid, msg.data, ws);
-          break;
-        case 'audio':
-          handleAudio(sid, msg.data, rtMgr, ws);
           break;
         case 'test_chat':
           await handleChat(sid, msg.data, ws);
@@ -122,12 +124,17 @@ async function handleFrame(sid, b64, ws) {
   } catch (e) { console.error('[Frame]', e.message); }
 }
 
-// ── 实时音频 → 阶跃星辰 Realtime ──
-function handleAudio(sid, b64, rtMgr, ws) {
+// ── 实时音频（二进制 WAV → 阶跃星辰 Realtime）──
+function handleAudioBinary(sid, wavBuffer, rtMgr, ws) {
   if (!rtMgr?.connected) return;
   try {
-    const wav = Buffer.from(b64, 'base64');
-    const pcm = extractPCMFromWAV(wav);
+    // 存 .wav 方便调试回听
+    const fs = require('fs');
+    const tmp = `tmp/${sid}_${Date.now()}.wav`;
+    fs.mkdirSync('tmp', { recursive: true });
+    fs.writeFileSync(tmp, wavBuffer);
+    // 去 WAV 头取 PCM → 直喂阶跃星辰
+    const pcm = extractPCMFromWAV(wavBuffer);
     if (pcm.length > 0) rtMgr.inputAudio(pcm);
   } catch (e) { console.error('[Audio]', e.message); }
 }

@@ -17,8 +17,6 @@ class RealtimeManager {
       secret: apiKey,
     });
     this.connected = false;
-    this.audioBuffer = Buffer.alloc(0);
-    this.bufferThreshold = 8192 * 2; // 16KB PCM 缓冲区阈值
   }
 
   async connect() {
@@ -93,19 +91,11 @@ class RealtimeManager {
    */
   inputAudio(audio) {
     if (!this.connected) return;
-
     const buf = Buffer.isBuffer(audio) ? audio : Buffer.from(audio);
-    this.audioBuffer = Buffer.concat([this.audioBuffer, buf]);
-
-    // 累积到阈值后发送
-    if (this.audioBuffer.length >= this.bufferThreshold) {
-      const chunk = this.audioBuffer.slice(0, this.bufferThreshold);
-      this.audioBuffer = this.audioBuffer.slice(this.bufferThreshold);
-      try {
-        this.client.appendInputAudio(chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength));
-      } catch (err) {
-        console.error('[Realtime] 音频输入失败:', err.message);
-      }
+    try {
+      this.client.appendInputAudio(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+    } catch (err) {
+      console.error('[Realtime] 音频输入失败:', err.message);
     }
   }
 
