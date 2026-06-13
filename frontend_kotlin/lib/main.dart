@@ -1,148 +1,150 @@
+import 'dart:async';
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'services/locator.dart';
-import 'services/speech_recognition_service.dart';
-import 'services/text_processor_service.dart';
+import 'chat_screen.dart';
+import 'utils/logger.dart';
 
 void main() async {
   await dotenv.load();
-  setupLocator();
-  runApp(const MyApp());
+  
+  runZonedGuarded<Future<void>>(
+    () async {
+      WidgetsFlutterBinding.ensureInitialized();
+      runApp(const MyApp());
+    },
+    (error, stackTrace) {
+      debugPrint('全局未处理异常: $error');
+      debugPrint('堆栈跟踪: $stackTrace');
+    },
+  );
 }
 
-class MyApp extends StatefulWidget {
+final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
+
+class MyApp extends StatelessWidget {
   const MyApp({super.key});
-
-  @override
-  State<MyApp> createState() => _MyAppState();
-}
-
-class _MyAppState extends State<MyApp> {
-  late SpeechRecognitionService _speechService;
-  late TextProcessorService _textProcessorService;
-  String _result = "";
-  bool _isRecording = false;
-  List<String> _sentences = [];
-
-  @override
-  void initState() {
-    super.initState();
-    _speechService = locator<SpeechRecognitionService>();
-    _textProcessorService = locator<TextProcessorService>();
-  }
-
-  Future<void> _toggleRecording() async {
-    if (_isRecording) {
-      await _stopRecording();
-    } else {
-      await _startRecording();
-    }
-  }
-
-  Future<void> _startRecording() async {
-    setState(() {
-      _isRecording = true;
-      _result = "";
-      _sentences = [];
-    });
-
-    try {
-      Stream<String> asrStream = _speechService.startListening();
-      
-      asrStream.listen(
-        (text) {
-          if (mounted) {
-            setState(() {
-              _result = text;
-            });
-          }
-        },
-        onError: (e) {
-          if (mounted) {
-            setState(() {
-              _result = "错误: $e";
-              _isRecording = false;
-            });
-          }
-        },
-        onDone: () {
-          if (mounted && _isRecording) {
-            setState(() {
-              _isRecording = false;
-            });
-          }
-        },
-      );
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _result = "错误: $e";
-          _isRecording = false;
-        });
-      }
-    }
-  }
-
-  Future<void> _stopRecording() async {
-    try {
-      await _speechService.stopListening();
-      if (_result.isNotEmpty) {
-        String processed = await _textProcessorService.processText(_result);
-        debugPrint("发送到后端: $processed");
-      }
-    } catch (e) {
-      debugPrint("Error stopping recording: $e");
-    } finally {
-      setState(() {
-        _isRecording = false;
-      });
-    }
-  }
-
-  @override
-  void dispose() {
-    _speechService.dispose();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      home: Scaffold(
-        appBar: AppBar(title: const Text('实时语音识别')),
+      title: 'Video Chat Assistant',
+      theme: ThemeData(primarySwatch: Colors.blue),
+      home: const ChatScreen(),
+      navigatorKey: _navigatorKey,
+      builder: (context, child) {
+        return ErrorHandler(child: child!, navigatorKey: _navigatorKey);
+      },
+    );
+  }
+}
+
+class ErrorHandler extends StatefulWidget {
+  final Widget child;
+  final GlobalKey<NavigatorState> navigatorKey;
+
+  const ErrorHandler({super.key, required this.child, required this.navigatorKey});
+
+  @override
+  State<ErrorHandler> createState() => _ErrorHandlerState();
+}
+
+class _ErrorHandlerState extends State<ErrorHandler> {
+  Object? _error;
+  StackTrace? _stackTrace;
+
+  @override
+  void initState() {
+    super.initState();
+    FlutterError.onError = _handleFlutterError;
+    PlatformDispatcher.instance.onError = _handlePlatformError;
+  }
+
+  void _handleFlutterError(FlutterErrorDetails details) {
+    setState(() {
+      _error = details.exception;
+      _stackTrace = details.stack;
+    });
+    Logger.e('ErrorHandler', 'Flutter错误: ${details.exception}', details.exception);
+    _showErrorDialog(details.exception.toString());
+  }
+
+  bool _handlePlatformError(Object error, StackTrace stackTrace) {
+    setState(() {
+      _error = error;
+      _stackTrace = stackTrace;
+    });
+    Logger.e('ErrorHandler', '平台错误: $error', error);
+    _showErrorDialog(error.toString());
+    return true;
+  }
+
+  void _showErrorDialog(String message) {
+    final context = widget.navigatorKey.currentContext;
+    if (context != null) {
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('发生错误'),
+          content: SingleChildScrollView(
+            child: Text(message),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                setState(() {
+                  _error = null;
+                  _stackTrace = null;
+                });
+                Navigator.pop(context);
+              },
+              child: const Text('确定'),
+            ),
+          ],
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_error != null) {
+      return Scaffold(
         body: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Expanded(
-                child: Container(
-                  padding: const EdgeInsets.all(20),
-                  alignment: Alignment.topLeft,
-                  child: SingleChildScrollView(
-                    child: Text(
-                      _result.isEmpty ? '点击下方按钮开始录音识别' : _result,
-                      style: const TextStyle(fontSize: 18),
-                    ),
-                  ),
-                ),
+              const Icon(
+                Icons.error_outline,
+                size: 64,
+                color: Colors.red,
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 16),
+              const Text(
+                '应用遇到问题',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                _error.toString(),
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.grey),
+              ),
+              const SizedBox(height: 16),
               ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  fixedSize: const Size(200, 60),
-                  backgroundColor: _isRecording ? Colors.red : Colors.blue,
-                ),
-                onPressed: _toggleRecording,
-                child: Text(
-                  _isRecording ? '停止识别' : '开始识别',
-                  style: const TextStyle(fontSize: 20, color: Colors.white),
-                ),
+                onPressed: () {
+                  setState(() {
+                    _error = null;
+                    _stackTrace = null;
+                  });
+                },
+                child: const Text('重试'),
               ),
-              const SizedBox(height: 40),
             ],
           ),
         ),
-      ),
-    );
+      );
+    }
+    return widget.child;
   }
 }
