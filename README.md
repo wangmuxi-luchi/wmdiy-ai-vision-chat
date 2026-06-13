@@ -221,20 +221,7 @@ flutter build apk --release
 
 ### 配置说明
 
-**环境变量（`.env`）**：
-```env
-# WebSocket 服务器配置
-BACKEND_HOST=localhost
-BACKEND_PORT=8000
-
-# 腾讯云语音识别配置（可选，运行时可配置）
-TENCENT_APP_ID=
-TENCENT_SECRET_ID=
-TENCENT_SECRET_KEY=
-```
-
-**运行时配置**：
-1. 点击右上角侧边栏按钮
+1. 点击左上角侧边栏按钮
 2. 配置后端服务器地址和端口
 3. 配置语音识别服务参数
 4. 配置自动发送功能
