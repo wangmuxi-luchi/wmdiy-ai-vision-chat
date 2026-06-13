@@ -42,6 +42,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final int _cameraPreviewKey = 0;
 
   String _pendingSpeechText = '';
+  String _confirmedSpeechText = ''; // 已确认的文本（一句话结束后累加）
   final List<ChatMessage> _messages = [];
   final List<CameraLog> _cameraLogs = [];
   int _imageCount = 0;
@@ -237,7 +238,6 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _startRecording() async {
     Logger.d('ChatScreen', '========== 开始录音 ==========');
-    // 不再清空之前的语音文本，保持内容直到发送
     try {
       Logger.d('ChatScreen', '调用 speechService.startListening()...');
       Stream<ASRResult> asrStream = _speechService.startListening();
@@ -256,15 +256,13 @@ class _ChatScreenState extends State<ChatScreen> {
           Logger.d('ChatScreen', '收到识别结果: text="$text", isFinal=$isFinal');
           
           setState(() {
-            // 保持文本累加，不清空之前的内容
-            // 如果是最终结果或文本为空，使用新文本；否则累加
-            if (isFinal || text.isEmpty) {
-              _pendingSpeechText = text;
+            if (isFinal) {
+              // 一句话结束（最终结果）：累加到已确认文本
+              _confirmedSpeechText += text;
+              _pendingSpeechText = _confirmedSpeechText;
             } else {
-              // 检查是否是重复内容或需要累加
-              if (!_pendingSpeechText.endsWith(text)) {
-                _pendingSpeechText = text;
-              }
+              // 识别变化（中间结果）：显示已确认文本 + 当前识别内容
+              _pendingSpeechText = _confirmedSpeechText + text;
             }
             _speechInputController.text = _pendingSpeechText;
           });
@@ -387,6 +385,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _sendUserMessage(_pendingSpeechText);
     setState(() {
       _pendingSpeechText = '';
+      _confirmedSpeechText = ''; // 清空已确认文本
       _speechInputController.clear();
     });
   }
