@@ -1,6 +1,4 @@
 import 'dart:async';
-import 'dart:html' as html;
-import 'dart:js' as js;
 import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
@@ -10,15 +8,14 @@ import '../../utils/logger.dart';
 const String _cameraViewType = 'web-camera-preview';
 
 class CameraServiceImpl implements CameraService {
-  html.VideoElement? _videoElement;
-  html.MediaStream? _stream;
-  html.CanvasElement? _canvasElement;
+  CameraController? _controller;
   bool _isInitialized = false;
   bool _isPreviewing = false;
   bool _isSwitching = false;
   CameraLensDirection _currentDirection = CameraLensDirection.back;
   final ValueNotifier<CameraController?> _controllerNotifier = ValueNotifier<CameraController?>(null);
   bool _hasMultipleCameras = false;
+  List<CameraDescription>? _cameras;
 
   @override
   bool get isInitialized => _isInitialized;
@@ -33,15 +30,13 @@ class CameraServiceImpl implements CameraService {
   bool get isSwitching => _isSwitching;
 
   @override
-  CameraController? get controller => null;
+  CameraController? get controller => _controller;
 
   @override
   CameraLensDirection? get currentDirection => _currentDirection;
 
   @override
   ValueNotifier<CameraController?> get controllerNotifier => _controllerNotifier;
-  
-  html.VideoElement? get videoElement => _videoElement;
   
   String get viewType => _cameraViewType;
 
@@ -50,104 +45,53 @@ class CameraServiceImpl implements CameraService {
     try {
       Logger.d('WebCamera', '正在初始化Web摄像头，方向: $direction');
 
-      final facingMode = direction == CameraLensDirection.back ? 'environment' : 'user';
-      
-      final constraints = {
-        'video': {
-          'facingMode': facingMode,
-          'width': {'ideal': 640},
-          'height': {'ideal': 480},
-        },
-        'audio': false,
-      };
-
-      final mediaDevices = html.window.navigator.mediaDevices;
-      if (mediaDevices == null) {
-        throw Exception('浏览器不支持媒体设备访问');
+      if (_cameras == null) {
+        Logger.d('WebCamera', '开始获取可用摄像头列表...');
+        _cameras = await availableCameras();
+        Logger.d('WebCamera', '获取摄像头列表完成，共 ${_cameras!.length} 个设备');
+        _hasMultipleCameras = _cameras!.length > 1;
+        Logger.d('WebCamera', '检测到 ${_cameras!.length} 个摄像头设备');
       }
-      _stream = await mediaDevices.getUserMedia(constraints);
 
-      _videoElement = html.VideoElement()
-        ..autoplay = true
-        ..muted = true
-        ..srcObject = _stream
-        ..style.width = '100%'
-        ..style.height = '100%'
-        ..style.objectFit = 'cover';
-      // 设置 playsinline 属性（iOS Safari 兼容）
-      _videoElement!.setAttribute('playsinline', 'true');
+      if (_cameras!.isEmpty) {
+        throw Exception('未检测到摄像头设备');
+      }
 
-      _canvasElement = html.CanvasElement();
+      CameraDescription? selectedCamera;
+      for (var camera in _cameras!) {
+        Logger.d('WebCamera', '摄像头: ${camera.name}, 方向: ${camera.lensDirection}');
+        if ((direction == CameraLensDirection.back && camera.lensDirection == CameraLensDirection.back) ||
+            (direction == CameraLensDirection.front && camera.lensDirection == CameraLensDirection.front)) {
+          selectedCamera = camera;
+          break;
+        }
+      }
 
-      await _detectCameraCount();
+      if (selectedCamera == null) {
+        selectedCamera = _cameras!.first;
+        Logger.d('WebCamera', '未找到指定方向的摄像头，使用第一个摄像头');
+      }
+
+      Logger.d('WebCamera', '创建 CameraController，分辨率: ResolutionPreset.medium');
+      _controller = CameraController(
+        selectedCamera,
+        ResolutionPreset.medium,
+      );
+
+      Logger.d('WebCamera', '开始初始化控制器...');
+      await _controller!.initialize();
+      Logger.d('WebCamera', '控制器初始化完成');
 
       _currentDirection = direction;
       _isInitialized = true;
-      _controllerNotifier.value = null;
-
-      // 注册视图工厂
-      _registerViewFactory();
+      Logger.d('WebCamera', '设置 controllerNotifier.value = $_controller');
+      _controllerNotifier.value = _controller;
 
       Logger.d('WebCamera', 'Web摄像头初始化成功');
       return true;
-    } catch (e) {
-      Logger.e('WebCamera', '初始化失败: $e');
+    } catch (e, stackTrace) {
+      Logger.e('WebCamera', '初始化失败: $e\n$stackTrace');
       return false;
-    }
-  }
-
-  void _registerViewFactory() {
-    try {
-      // 使用 JavaScript 互操作动态注册视图工厂
-      // 将视频元素存储到全局对象供 JS 访问
-      js.context['_cameraVideoElement'] = _videoElement;
-      
-      // 执行 JavaScript 代码注册视图工厂
-      final jsCode = '''
-        (function() {
-          var viewType = "$_cameraViewType";
-          var videoElement = window._cameraVideoElement;
-          
-          // 尝试多种方式注册视图工厂
-          if (window.flutterWebRenderer && window.flutterWebRenderer.platformViewRegistry) {
-            window.flutterWebRenderer.platformViewRegistry.registerViewFactory(viewType, function(controller) {
-              return videoElement;
-            });
-          } else if (window.ui && window.ui.platformViewRegistry) {
-            window.ui.platformViewRegistry.registerViewFactory(viewType, function(controller) {
-              return videoElement;
-            });
-          } else if (window.platformViewRegistry) {
-            window.platformViewRegistry.registerViewFactory(viewType, function(controller) {
-              return videoElement;
-            });
-          } else {
-            console.error("无法找到 platformViewRegistry");
-          }
-        })();
-      ''';
-      
-      js.context['eval'](jsCode);
-      Logger.d('WebCamera', '视图工厂注册成功: $_cameraViewType');
-    } catch (e) {
-      Logger.e('WebCamera', '注册视图工厂失败: $e');
-    }
-  }
-
-  Future<void> _detectCameraCount() async {
-    try {
-      final mediaDevices = html.window.navigator.mediaDevices;
-      if (mediaDevices == null) {
-        _hasMultipleCameras = true;
-        return;
-      }
-      final devices = await mediaDevices.enumerateDevices();
-      final videoDevices = devices.where((d) => d.kind == 'videoinput').toList();
-      _hasMultipleCameras = videoDevices.length > 1;
-      Logger.d('WebCamera', '检测到 ${videoDevices.length} 个摄像头设备');
-    } catch (e) {
-      Logger.d('WebCamera', '无法检测摄像头数量: $e');
-      _hasMultipleCameras = true;
     }
   }
 
@@ -165,7 +109,6 @@ class CameraServiceImpl implements CameraService {
 
     try {
       await stopPreview();
-      await _disposeStream();
 
       _currentDirection = _currentDirection == CameraLensDirection.back
           ? CameraLensDirection.front
@@ -189,7 +132,7 @@ class CameraServiceImpl implements CameraService {
 
   @override
   Future<void> startPreview() async {
-    if (_videoElement != null && !_isPreviewing) {
+    if (_controller != null && !_isPreviewing) {
       Logger.d('WebCamera', '启动预览');
       _isPreviewing = true;
     }
@@ -197,15 +140,27 @@ class CameraServiceImpl implements CameraService {
 
   @override
   Future<void> stopPreview() async {
-    if (_videoElement != null && _isPreviewing) {
+    if (_controller != null && _isPreviewing) {
       Logger.d('WebCamera', '停止预览');
       _isPreviewing = false;
     }
   }
 
   @override
+  void restartPreview() {
+    Logger.d('WebCamera', '重新启动预览');
+    if (_controller != null && _isInitialized) {
+      Logger.d('WebCamera', '触发 controllerNotifier 更新以重建预览');
+      _controllerNotifier.value = null;
+      Future.microtask(() {
+        _controllerNotifier.value = _controller;
+      });
+    }
+  }
+
+  @override
   Future<Uint8List?> captureImage() async {
-    if (!isInitialized || _videoElement == null || _canvasElement == null) {
+    if (!isInitialized || _controller == null) {
       Logger.e('WebCamera', '捕获失败：摄像头未初始化');
       return null;
     }
@@ -213,48 +168,14 @@ class CameraServiceImpl implements CameraService {
     try {
       Logger.d('WebCamera', '开始捕获图像');
 
-      _canvasElement!.width = _videoElement!.videoWidth ?? 640;
-      _canvasElement!.height = _videoElement!.videoHeight ?? 480;
+      final XFile image = await _controller!.takePicture();
+      final bytes = await image.readAsBytes();
 
-      final ctx = _canvasElement!.context2D;
-      ctx.drawImage(_videoElement!, 0, 0);
-
-      final blob = await _canvasElement!.toBlob('image/jpeg', 0.9);
-      if (blob == null) {
-        Logger.e('WebCamera', '捕获失败：无法生成Blob');
-        return null;
-      }
-
-      final reader = html.FileReader();
-      reader.readAsArrayBuffer(blob);
-      await reader.onLoad.first;
-
-      Uint8List uint8List;
-      if (reader.result is ByteBuffer) {
-        final bytes = reader.result as ByteBuffer;
-        uint8List = bytes.asUint8List();
-      } else if (reader.result is Uint8List) {
-        uint8List = reader.result as Uint8List;
-      } else if (reader.result != null) {
-        Logger.d('WebCamera', '未知的result类型: ${reader.result.runtimeType}');
-        uint8List = Uint8List.fromList((reader.result as List).cast<int>());
-      } else {
-        Logger.e('WebCamera', '捕获失败：reader.result为空');
-        return null;
-      }
-
-      Logger.d('WebCamera', '捕获成功，图像大小: ${uint8List.length} 字节');
-      return uint8List;
+      Logger.d('WebCamera', '捕获成功，图像大小: ${bytes.length} 字节');
+      return bytes;
     } catch (e) {
       Logger.e('WebCamera', '捕获失败: $e');
       return null;
-    }
-  }
-
-  Future<void> _disposeStream() async {
-    if (_stream != null) {
-      _stream!.getTracks().forEach((track) => track.stop());
-      _stream = null;
     }
   }
 
@@ -262,10 +183,8 @@ class CameraServiceImpl implements CameraService {
   void dispose() {
     Logger.d('WebCamera', '释放Web摄像头资源');
     stopPreview();
-    _disposeStream();
-    _videoElement?.remove();
-    _videoElement = null;
-    _canvasElement = null;
+    _controller?.dispose();
+    _controller = null;
     _isInitialized = false;
     _isPreviewing = false;
     _controllerNotifier.value = null;

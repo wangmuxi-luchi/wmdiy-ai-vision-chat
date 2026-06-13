@@ -6,11 +6,15 @@ import 'chat_screen.dart';
 import 'utils/logger.dart';
 
 void main() async {
+  // 先确保绑定初始化
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  // 然后加载环境变量
   await dotenv.load();
   
+  // 在同一个 zone 中运行应用
   runZonedGuarded<Future<void>>(
     () async {
-      WidgetsFlutterBinding.ensureInitialized();
       runApp(const MyApp());
     },
     (error, stackTrace) {

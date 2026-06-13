@@ -58,3 +58,4 @@ frontend_kotlin/windows/third_party/
 frontend_kotlin/web/third_party/tencentcloud-speech-sdk-js-main/asr/examples/config.js
 
 frontend/
+frontend_test/my_camera_app/

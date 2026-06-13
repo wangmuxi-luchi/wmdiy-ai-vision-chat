@@ -72,6 +72,11 @@ class MockCameraService implements CameraService {
   }
   
   @override
+  void restartPreview() {
+    // Mock implementation
+  }
+  
+  @override
   Future<Uint8List?> captureImage() async {
     await Future.delayed(const Duration(milliseconds: 300));
     return Uint8List.fromList([0x89, 0x50, 0x4E, 0x47]);

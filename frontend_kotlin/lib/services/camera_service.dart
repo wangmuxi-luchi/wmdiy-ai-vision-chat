@@ -15,6 +15,8 @@ abstract class CameraService {
   
   Future<bool> switchCamera();
   
+  void restartPreview();
+  
   bool get isInitialized;
   
   bool get isPreviewing;

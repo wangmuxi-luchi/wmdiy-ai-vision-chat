@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:js' as js;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'services/locator.dart';
@@ -12,6 +13,7 @@ import 'services/camera_service.dart';
 import 'services/communication_service.dart';
 import 'widgets/sidebar.dart';
 import 'widgets/camera_preview_widget.dart';
+import 'widgets/draggable_camera_preview.dart';
 import 'utils/logger.dart';
 
 class ChatScreen extends StatefulWidget {
@@ -39,7 +41,7 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _isSidebarOpen = false;
   bool _isAutoSendSpeech = false; // 语音转文字自动发送开关
   bool _isStoppingRecording = false; // 是否正在停止录音（用于防止关闭麦克风时接收缓存结果）
-  final int _cameraPreviewKey = 0;
+  int _cameraPreviewKey = 0;
 
   String _pendingSpeechText = '';
   String _confirmedSpeechText = ''; // 已确认的文本（一句话结束后累加）
@@ -348,7 +350,44 @@ class _ChatScreenState extends State<ChatScreen> {
   }
   
   void _toggleFullscreen() {
-    setState(() => _isFullscreen = !_isFullscreen);
+    Logger.d('ChatScreen', '_toggleFullscreen() - 之前: _isFullscreen=$_isFullscreen, _cameraPreviewKey=$_cameraPreviewKey');
+    
+    // 输出切换前的 video 状态
+    _logVideoElementStatus('切换全屏前');
+    
+    setState(() {
+      _isFullscreen = !_isFullscreen;
+      _cameraPreviewKey++;
+    });
+    
+    Logger.d('ChatScreen', '_toggleFullscreen() - 之后: _isFullscreen=$_isFullscreen, _cameraPreviewKey=$_cameraPreviewKey');
+    
+    // 延迟调用 restartPreview 确保 Widget 重建完成后再重启预览
+    // 这是为了解决 Flutter Web 全屏切换时 CameraPreview 失效的问题
+    Future.delayed(const Duration(milliseconds: 100), () {
+      // 输出切换中的 video 状态
+      _logVideoElementStatus('切换全屏中(100ms)');
+    });
+    
+    Future.delayed(const Duration(milliseconds: 300), () {
+      Logger.d('ChatScreen', '全屏切换后调用 restartPreview');
+      // 输出切换后的 video 状态
+      _logVideoElementStatus('切换全屏后(300ms)');
+      _cameraService.restartPreview();
+    });
+    
+    Future.delayed(const Duration(milliseconds: 500), () {
+      // 输出 restartPreview 后的 video 状态
+      _logVideoElementStatus('restartPreview 后(500ms)');
+    });
+  }
+  
+  void _logVideoElementStatus(String context) {
+    try {
+      js.context.callMethod('logVideoElementStatus', [context]);
+    } catch (e) {
+      Logger.d('ChatScreen', '_logVideoElementStatus 失败: $e');
+    }
   }
 
   void _sendUserMessage(String text) {
@@ -429,7 +468,7 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
       body: Stack(
         children: [
-          _isFullscreen ? _buildFullscreenCamera() : _buildNormalLayout(),
+          _isFullscreen ? _buildCameraPreview(isFullscreen: true) : _buildNormalLayout(),
           if (_isSidebarOpen)
             Stack(
               children: [
@@ -453,124 +492,113 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Widget _buildNormalLayout() {
-    return Column(
-      children: [
-        _buildCameraPreview(isFullscreen: false),
-        Expanded(child: _buildMessageList()),
-        _buildPendingSpeechArea(),
-        _buildInputBar(),
-      ],
-    );
-  }
-
-  Widget _buildFullscreenCamera() {
     return Stack(
       children: [
-        _buildCameraPreview(isFullscreen: true),
-        Positioned(
-          top: 40,
-          left: 16,
-          child: Row(
-            children: [
-              IconButton(
-                icon: Icon(_isMicOn ? Icons.mic : Icons.mic_off, color: _isMicOn ? Colors.red : Colors.white, size: 32),
-                onPressed: _toggleMic,
-              ),
-              IconButton(
-                icon: Icon(_isCameraOn ? Icons.videocam : Icons.videocam_off, color: Colors.white, size: 32),
-                onPressed: _toggleCamera,
-              ),
-              if (_cameraService.hasMultipleCameras)
-                IconButton(
-                  icon: const Icon(Icons.flip_camera_android, color: Colors.white, size: 32),
-                  onPressed: _switchCamera,
-                ),
-            ],
+        Column(
+          children: [
+            Expanded(child: _buildMessageList()),
+            _buildPendingSpeechArea(),
+            _buildInputBar(),
+          ],
+        ),
+        // 浮动的可拖动摄像头预览窗口
+        if (_isCameraInitialized && _isCameraOn)
+          DraggableCameraPreview(
+            child: _buildCameraPreview(isFullscreen: false),
+            onTap: _toggleFullscreen,
           ),
-        ),
-        Positioned(
-          top: 40,
-          right: 16,
-          child: IconButton(
-            icon: const Icon(Icons.fullscreen_exit, color: Colors.white, size: 32),
-            onPressed: _toggleFullscreen,
-          ),
-        ),
-        Positioned(
-          bottom: 20,
-          left: 20,
-          child: _buildCameraLogList(),
-        ),
-        Positioned(
-          bottom: 20,
-          right: 20,
-          child: IconButton(
-            icon: const Icon(Icons.camera, color: Colors.white, size: 48),
-            onPressed: () => _sendCameraImage(CameraTriggerType.manual),
-            tooltip: '手动发送图像',
-          ),
-        ),
       ],
     );
   }
 
   Widget _buildCameraPreview({required bool isFullscreen}) {
+    Logger.d('ChatScreen', '_buildCameraPreview() - isFullscreen=$isFullscreen, _isCameraInitialized=$_isCameraInitialized, _isCameraOn=$_isCameraOn, _cameraPreviewKey=$_cameraPreviewKey');
+    
     return RepaintBoundary(
-      child: GestureDetector(
-        onTap: isFullscreen ? null : _toggleFullscreen,
-        child: Container(
-          margin: isFullscreen ? EdgeInsets.zero : const EdgeInsets.all(8),
-          height: isFullscreen ? double.infinity : 200,
-          width: double.infinity,
-          decoration: BoxDecoration(
-            color: Colors.black,
-            borderRadius: isFullscreen ? null : BorderRadius.circular(16),
-          ),
-          child: Stack(
-            children: [
-              if (_isCameraInitialized && _isCameraOn && _cameraService.controller != null)
-                Center(
-                  child: CameraPreviewWidget(key: ValueKey(_cameraPreviewKey)),
-                )
-              else
-                Center(
-                  child: _isCameraOn
-                      ? const Icon(Icons.videocam, size: 48, color: Colors.white70)
-                      : const Icon(Icons.videocam_off, size: 48, color: Colors.white70),
-                ),
-              if (!isFullscreen)
-                Align(
-                  alignment: Alignment.topRight,
-                  child: Padding(
-                    padding: const EdgeInsets.all(8),
-                    child: Row(
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.camera, color: Colors.white),
-                          onPressed: () => _sendCameraImage(CameraTriggerType.manual),
-                          tooltip: '手动发送图像',
-                        ),
-                        if (_cameraService.hasMultipleCameras)
-                          IconButton(
-                            icon: const Icon(Icons.flip_camera_android, color: Colors.white),
-                            onPressed: _switchCamera,
-                            tooltip: '切换摄像头',
-                          ),
-                        IconButton(
-                          icon: const Icon(Icons.fullscreen, color: Colors.white),
-                          onPressed: _toggleFullscreen,
-                        ),
-                      ],
+      child: Container(
+        color: Colors.black,
+        child: Stack(
+          children: [
+            if (_isCameraInitialized && _isCameraOn)
+              Center(
+                child: CameraPreviewWidget(key: ValueKey(_cameraPreviewKey)),
+              )
+            else
+              Center(
+                child: _isCameraOn
+                    ? const Icon(Icons.videocam, size: 48, color: Colors.white70)
+                    : const Icon(Icons.videocam_off, size: 48, color: Colors.white70),
+              ),
+            // 全屏模式下的控制按钮
+            if (isFullscreen)
+              Positioned(
+                top: 40,
+                left: 16,
+                child: Row(
+                  children: [
+                    IconButton(
+                      icon: Icon(_isMicOn ? Icons.mic : Icons.mic_off, color: _isMicOn ? Colors.red : Colors.white, size: 32),
+                      onPressed: _toggleMic,
                     ),
-                  ),
+                    IconButton(
+                      icon: Icon(_isCameraOn ? Icons.videocam : Icons.videocam_off, color: Colors.white, size: 32),
+                      onPressed: _toggleCamera,
+                    ),
+                    if (_cameraService.hasMultipleCameras)
+                      IconButton(
+                        icon: const Icon(Icons.flip_camera_android, color: Colors.white, size: 32),
+                        onPressed: _switchCamera,
+                      ),
+                  ],
                 ),
-              if (!isFullscreen)
-                Align(
-                  alignment: Alignment.bottomLeft,
-                  child: _buildCameraLogList(),
+              ),
+            if (isFullscreen)
+              Positioned(
+                top: 40,
+                right: 16,
+                child: IconButton(
+                  icon: const Icon(Icons.fullscreen_exit, color: Colors.white, size: 32),
+                  onPressed: _toggleFullscreen,
                 ),
-            ],
-          ),
+              ),
+            if (isFullscreen)
+              Positioned(
+                bottom: 20,
+                left: 20,
+                child: _buildCameraLogList(),
+              ),
+            if (isFullscreen)
+              Positioned(
+                bottom: 20,
+                right: 20,
+                child: IconButton(
+                  icon: const Icon(Icons.camera, color: Colors.white, size: 48),
+                  onPressed: () => _sendCameraImage(CameraTriggerType.manual),
+                  tooltip: '手动发送图像',
+                ),
+              ),
+            // 非全屏浮动窗口模式下的简单控制按钮
+            if (!isFullscreen)
+              Positioned(
+                top: 4,
+                right: 4,
+                child: Row(
+                  children: [
+                    if (_cameraService.hasMultipleCameras)
+                      IconButton(
+                        icon: const Icon(Icons.flip_camera_android, color: Colors.white, size: 18),
+                        onPressed: _switchCamera,
+                        tooltip: '切换摄像头',
+                      ),
+                    IconButton(
+                      icon: const Icon(Icons.maximize, color: Colors.white, size: 18),
+                      onPressed: _toggleFullscreen,
+                      tooltip: '全屏',
+                    ),
+                  ],
+                ),
+              ),
+          ],
         ),
       ),
     );
