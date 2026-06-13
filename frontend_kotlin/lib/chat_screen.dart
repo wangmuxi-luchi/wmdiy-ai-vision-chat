@@ -1,13 +1,9 @@
 import 'dart:async';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'package:camera/camera.dart';
 import 'services/locator.dart';
 import 'services/config_service.dart';
 import 'services/speech_recognition_service.dart';
-import 'services/text_processor_service.dart';
 import 'services/message_receiver_service.dart';
 import 'services/impl/message_receiver_service_impl.dart';
 import 'services/command_receiver_service.dart';
@@ -15,6 +11,8 @@ import 'services/camera_image_service.dart';
 import 'services/camera_service.dart';
 import 'services/communication_service.dart';
 import 'widgets/sidebar.dart';
+import 'widgets/camera_preview_widget.dart';
+import 'utils/logger.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -25,7 +23,6 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   late SpeechRecognitionService _speechService;
-  late TextProcessorService _textProcessorService;
   late MessageReceiverService _messageReceiverService;
   late CommandReceiverService _commandReceiverService;
   late CameraImageService _cameraImageService;
@@ -42,7 +39,7 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _isSidebarOpen = false;
   bool _isAutoSendSpeech = false; // 语音转文字自动发送开关
   bool _isStoppingRecording = false; // 是否正在停止录音（用于防止关闭麦克风时接收缓存结果）
-  int _cameraPreviewKey = 0;
+  final int _cameraPreviewKey = 0;
 
   String _pendingSpeechText = '';
   final List<ChatMessage> _messages = [];
@@ -62,7 +59,6 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       setupLocator();
       _speechService = locator<SpeechRecognitionService>();
-      _textProcessorService = locator<TextProcessorService>();
       _messageReceiverService = locator<MessageReceiverService>();
       _commandReceiverService = locator<CommandReceiverService>();
       _cameraImageService = locator<CameraImageService>();
@@ -71,13 +67,34 @@ class _ChatScreenState extends State<ChatScreen> {
       _configService = locator<ConfigService>();
       await _configService.init();
       
+      // 加载语音配置并设置到语音服务
+      await _loadSpeechConfig();
+      
       _subscribeToCommands();
       _subscribeToMessages();
       await _initializeCamera();
       await _connectToServer();
     } catch (e, stackTrace) {
-      debugPrint('初始化异常: $e\n$stackTrace');
+      Logger.e('ChatScreen', '初始化异常: $e\n$stackTrace', e);
       _showErrorSnackBar('初始化失败: ${e.toString()}');
+    }
+  }
+  
+  Future<void> _loadSpeechConfig() async {
+    try {
+      final speechConfig = await _configService.getSpeechConfig();
+      if (speechConfig.isValid) {
+        _speechService.setCredentials(
+          appId: int.parse(speechConfig.appId),
+          secretId: speechConfig.secretId,
+          secretKey: speechConfig.secretKey,
+        );
+        Logger.i('ChatScreen', '语音配置已加载: appId=${speechConfig.appId}');
+      } else {
+        Logger.w('ChatScreen', '语音配置无效，请在侧边栏设置');
+      }
+    } catch (e) {
+      Logger.e('ChatScreen', '加载语音配置失败', e);
     }
   }
   
@@ -96,10 +113,10 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _connectToServer() async {
     bool connected = await _communicationService.connect();
     if (connected) {
-      debugPrint('已连接到后端服务器');
+      Logger.i('ChatScreen', '已连接到后端服务器');
       _startMessageReceiver();
     } else {
-      debugPrint('连接后端服务器失败');
+      Logger.w('ChatScreen', '连接后端服务器失败');
     }
   }
   
@@ -142,7 +159,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _handleSendCameraImage(command);
         break;
       default:
-        debugPrint('Unknown command type: ${command.type}');
+        Logger.w('ChatScreen', 'Unknown command type: ${command.type}');
     }
   }
 
@@ -178,7 +195,7 @@ class _ChatScreenState extends State<ChatScreen> {
           }
         } else {
           _cameraImageService.analyzeImage('camera_frame_data').then((analysisResult) {
-            debugPrint('图像分析结果: $analysisResult');
+            Logger.d('ChatScreen', '图像分析结果: $analysisResult');
             setState(() {
               _cameraLogs.last.status = '离线分析完成（未发送）';
             });
@@ -209,6 +226,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _toggleMic() {
+    Logger.d('ChatScreen', '切换麦克风状态: 当前=$_isMicOn');
     setState(() => _isMicOn = !_isMicOn);
     if (_isMicOn) {
       _startRecording();
@@ -218,34 +236,48 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _startRecording() async {
-    setState(() {
-      _pendingSpeechText = '';
-    });
-
+    Logger.d('ChatScreen', '========== 开始录音 ==========');
+    // 不再清空之前的语音文本，保持内容直到发送
     try {
+      Logger.d('ChatScreen', '调用 speechService.startListening()...');
       Stream<ASRResult> asrStream = _speechService.startListening();
+      Logger.d('ChatScreen', 'startListening() 返回成功，开始监听Stream');
       
       asrStream.listen(
         (result) {
           // 如果正在停止录音，忽略收到的数据（可能是SDK缓存的旧数据）
           if (!mounted || _isStoppingRecording) {
+            Logger.d('ChatScreen', '收到识别结果但已停止，忽略: text=${result.text}');
             return;
           }
           
           String text = result.text;
-          bool isFinal = result.isFinal ?? false;
+          bool isFinal = result.isFinal;
+          Logger.d('ChatScreen', '收到识别结果: text="$text", isFinal=$isFinal');
           
           setState(() {
-            _pendingSpeechText = text;
-            _speechInputController.text = text;
+            // 保持文本累加，不清空之前的内容
+            // 如果是最终结果或文本为空，使用新文本；否则累加
+            if (isFinal || text.isEmpty) {
+              _pendingSpeechText = text;
+            } else {
+              // 检查是否是重复内容或需要累加
+              if (!_pendingSpeechText.endsWith(text)) {
+                _pendingSpeechText = text;
+              }
+            }
+            _speechInputController.text = _pendingSpeechText;
           });
+          Logger.d('ChatScreen', 'UI已更新识别结果: "$_pendingSpeechText"');
           
           // 如果开启自动发送且收到最终结果，立即发送
-          if (_isAutoSendSpeech && isFinal && text.trim().isNotEmpty) {
+          if (_isAutoSendSpeech && isFinal && _pendingSpeechText.trim().isNotEmpty) {
+            Logger.d('ChatScreen', '自动发送已开启，发送识别结果');
             _sendPendingSpeech();
           }
         },
         onError: (e) {
+          Logger.e('ChatScreen', '语音识别错误: $e');
           if (mounted) {
             setState(() {
               _pendingSpeechText = "错误: $e";
@@ -254,6 +286,7 @@ class _ChatScreenState extends State<ChatScreen> {
           }
         },
         onDone: () {
+          Logger.d('ChatScreen', '语音识别Stream结束');
           if (mounted && _isMicOn) {
             setState(() {
               _isMicOn = false;
@@ -261,7 +294,9 @@ class _ChatScreenState extends State<ChatScreen> {
           }
         },
       );
+      Logger.d('ChatScreen', 'Stream监听已设置完成');
     } catch (e) {
+      Logger.e('ChatScreen', '启动录音异常: $e');
       if (mounted) {
         setState(() {
           _pendingSpeechText = "错误: $e";
@@ -278,7 +313,7 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       await _speechService.stopListening();
     } catch (e) {
-      debugPrint("Error stopping recording: $e");
+      Logger.e('ChatScreen', 'Error stopping recording: $e');
     }
     setState(() {
       _isStoppingRecording = false;
@@ -314,14 +349,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
   
-  Future<void> _waitForNextFrame() {
-    final completer = Completer<void>();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      completer.complete();
-    });
-    return completer.future;
-  }
-
   void _toggleFullscreen() {
     setState(() => _isFullscreen = !_isFullscreen);
   }
@@ -339,8 +366,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _communicationService.sendTextMessage(text).then((reply) {
         // 回复通过 messageStream 接收
       }).catchError((error) {
-        debugPrint('发送消息失败: $error');
-        return '';
+        Logger.e('ChatScreen', '发送消息失败: $error');
       });
     } else {
       _messageReceiverService.receiveMessage(text).then((replyText) {
@@ -716,24 +742,6 @@ class ChatMessage {
     this.isImage = false,
     this.isImageReply = false,
   });
-}
-
-class CameraPreviewWidget extends StatelessWidget {
-  const CameraPreviewWidget({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    final cameraService = locator<CameraService>();
-    return ValueListenableBuilder<CameraController?>(
-      valueListenable: cameraService.controllerNotifier,
-      builder: (context, controller, child) {
-        if (controller == null || !controller.value.isInitialized) {
-          return const SizedBox();
-        }
-        return CameraPreview(controller);
-      },
-    );
-  }
 }
 
 enum CameraTriggerType {

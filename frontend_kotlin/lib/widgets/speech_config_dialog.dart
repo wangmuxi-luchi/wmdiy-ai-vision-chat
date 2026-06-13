@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import '../services/config_service.dart';
 import '../services/locator.dart';
 import '../services/speech_recognition_service.dart';
-import '../services/impl/asr_speech_recognition_service.dart';
 
 class SpeechConfigDialog extends StatefulWidget {
   const SpeechConfigDialog({super.key});
@@ -51,8 +50,13 @@ class _SpeechConfigDialogState extends State<SpeechConfigDialog> {
     
     await _configService.saveSpeechConfig(newConfig);
     
-    if (_speechService is ASRSpeechRecognitionService) {
-      await (_speechService as ASRSpeechRecognitionService).updateConfig();
+    // 更新语音服务凭证（支持所有平台）
+    if (newConfig.isValid) {
+      _speechService.setCredentials(
+        appId: int.parse(newConfig.appId),
+        secretId: newConfig.secretId,
+        secretKey: newConfig.secretKey,
+      );
     }
     
     setState(() {

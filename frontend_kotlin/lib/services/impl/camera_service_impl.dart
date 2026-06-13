@@ -1,4 +1,3 @@
-import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import '../camera_service.dart';
@@ -46,11 +45,7 @@ class CameraServiceImpl implements CameraService {
       
       Logger.d('Camera', '找到 ${_cameras!.length} 个摄像头');
       
-      CameraDescription? camera = _findCamera(direction);
-      if (camera == null) {
-        camera = _cameras![0];
-      }
-      
+      CameraDescription camera = _findCamera(direction) ?? _cameras![0];
       await _initCameraController(camera);
       Logger.d('Camera', '摄像头初始化成功，当前方向: ${camera.lensDirection}');
       return true;

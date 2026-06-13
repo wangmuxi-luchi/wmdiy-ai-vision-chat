@@ -3,9 +3,8 @@
   2）将获取到的 tmpSecretId、tmpSecretkey 和 Token 依次作为参数 secretid、secretkey 和 token传入
 * */
 let config = {
-  secretKey: '',
-  secretId: '',
-  appId: 0,
+  secretKey: 'ObWQEwkT8gAvXzX3Yu6flolbNGEMA1iC',
+  secretId: 'AKIDhNsBJFajgdOzOeiq38awPiqrodKK9nRw',
+  appId: 1442865350,
 }
 window.config = config
-

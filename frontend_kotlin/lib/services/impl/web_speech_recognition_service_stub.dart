@@ -4,7 +4,6 @@ import '../../utils/logger.dart';
 
 class WebSpeechRecognitionService implements SpeechRecognitionService {
   final StreamController<ASRResult> _resultController = StreamController<ASRResult>();
-  bool _isDisposed = false;
 
   @override
   Stream<ASRResult> startListening() async* {
@@ -18,9 +17,17 @@ class WebSpeechRecognitionService implements SpeechRecognitionService {
 
   @override
   void dispose() {
-    _isDisposed = true;
     if (!_resultController.isClosed) {
       _resultController.close();
     }
+  }
+
+  @override
+  void setCredentials({
+    required String secretId,
+    required String secretKey,
+    required int appId,
+  }) {
+    Logger.d('WebASR', 'setCredentials called but not on Web platform');
   }
 }

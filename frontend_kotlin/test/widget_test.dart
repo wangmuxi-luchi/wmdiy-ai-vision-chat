@@ -35,6 +35,13 @@ class MockSpeechRecognitionService implements SpeechRecognitionService {
   void dispose() {
     _controller?.close();
   }
+
+  @override
+  void setCredentials({
+    required String secretId,
+    required String secretKey,
+    required int appId,
+  }) {}
 }
 
 class MockTextProcessorService implements TextProcessorService {

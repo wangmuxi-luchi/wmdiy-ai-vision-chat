@@ -29,13 +29,11 @@ class WebSocketCommunicationService implements CommunicationService {
   final Duration _initialReconnectDelay;
   final Duration _maxReconnectDelay;
   final Duration _heartbeatInterval;
-  final Duration _heartbeatTimeout;
 
   WebSocketCommunicationService({String? host, int? port})
       : _initialReconnectDelay = const Duration(seconds: 1),
         _maxReconnectDelay = const Duration(minutes: 1),
         _heartbeatInterval = const Duration(seconds: 30),
-        _heartbeatTimeout = const Duration(seconds: 10),
         _currentDelay = const Duration(seconds: 1),
         _url = _buildUrl(host ?? dotenv.env['BACKEND_HOST'] ?? 'localhost', port ?? int.tryParse(dotenv.env['BACKEND_PORT'] ?? '8000') ?? 8000);
 
@@ -72,6 +70,7 @@ class WebSocketCommunicationService implements CommunicationService {
     _isChanging = false;
   }
 
+  @override
   Future<void> updateConnection(String host, int port) async {
     final newUrl = _buildUrl(host, port);
     await changeUrl(newUrl);
@@ -154,7 +153,7 @@ class WebSocketCommunicationService implements CommunicationService {
       return await completer.future.timeout(const Duration(seconds: 15));
     } catch (e) {
       Logger.e('WebSocket', '消息发送超时: $e');
-      subscription?.cancel();
+      subscription.cancel();
       return '发送超时，请稍后重试';
     }
   }
@@ -197,7 +196,7 @@ class WebSocketCommunicationService implements CommunicationService {
       return await completer.future.timeout(const Duration(seconds: 15));
     } catch (e) {
       Logger.e('WebSocket', '图像发送超时: $e');
-      subscription?.cancel();
+      subscription.cancel();
       return '图像发送超时，请稍后重试';
     }
   }
@@ -336,7 +335,7 @@ class WebSocketCommunicationService implements CommunicationService {
       _webSocket = await WebSocket.connect(_url).timeout(const Duration(seconds: 10));
       _onConnected();
     } catch (e) {
-      Logger.e('WebSocket', '❌ 重连失败 (${_reconnectAttempts}/10): $e');
+      Logger.e('WebSocket', '❌ 重连失败 ($_reconnectAttempts/10): $e');
       _isReconnecting = false;
       _currentDelay = Duration(
         milliseconds: (_currentDelay.inMilliseconds * 2).clamp(0, _maxReconnectDelay.inMilliseconds),

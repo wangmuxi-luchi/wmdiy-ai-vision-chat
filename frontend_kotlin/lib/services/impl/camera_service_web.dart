@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:html' as html;
+import 'dart:js' as js;
 import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import '../camera_service.dart';
 import '../../utils/logger.dart';
+
+const String _cameraViewType = 'web-camera-preview';
 
 class CameraServiceImpl implements CameraService {
   html.VideoElement? _videoElement;
@@ -37,6 +40,10 @@ class CameraServiceImpl implements CameraService {
 
   @override
   ValueNotifier<CameraController?> get controllerNotifier => _controllerNotifier;
+  
+  html.VideoElement? get videoElement => _videoElement;
+  
+  String get viewType => _cameraViewType;
 
   @override
   Future<bool> initialize([CameraLensDirection direction = CameraLensDirection.back]) async {
@@ -62,12 +69,13 @@ class CameraServiceImpl implements CameraService {
 
       _videoElement = html.VideoElement()
         ..autoplay = true
+        ..muted = true
         ..srcObject = _stream
-        ..style.display = 'none';
-
-      html.document.body?.append(_videoElement!);
-
-      await _videoElement!.play();
+        ..style.width = '100%'
+        ..style.height = '100%'
+        ..style.objectFit = 'cover';
+      // 设置 playsinline 属性（iOS Safari 兼容）
+      _videoElement!.setAttribute('playsinline', 'true');
 
       _canvasElement = html.CanvasElement();
 
@@ -77,11 +85,52 @@ class CameraServiceImpl implements CameraService {
       _isInitialized = true;
       _controllerNotifier.value = null;
 
+      // 注册视图工厂
+      _registerViewFactory();
+
       Logger.d('WebCamera', 'Web摄像头初始化成功');
       return true;
     } catch (e) {
       Logger.e('WebCamera', '初始化失败: $e');
       return false;
+    }
+  }
+
+  void _registerViewFactory() {
+    try {
+      // 使用 JavaScript 互操作动态注册视图工厂
+      // 将视频元素存储到全局对象供 JS 访问
+      js.context['_cameraVideoElement'] = _videoElement;
+      
+      // 执行 JavaScript 代码注册视图工厂
+      final jsCode = '''
+        (function() {
+          var viewType = "$_cameraViewType";
+          var videoElement = window._cameraVideoElement;
+          
+          // 尝试多种方式注册视图工厂
+          if (window.flutterWebRenderer && window.flutterWebRenderer.platformViewRegistry) {
+            window.flutterWebRenderer.platformViewRegistry.registerViewFactory(viewType, function(controller) {
+              return videoElement;
+            });
+          } else if (window.ui && window.ui.platformViewRegistry) {
+            window.ui.platformViewRegistry.registerViewFactory(viewType, function(controller) {
+              return videoElement;
+            });
+          } else if (window.platformViewRegistry) {
+            window.platformViewRegistry.registerViewFactory(viewType, function(controller) {
+              return videoElement;
+            });
+          } else {
+            console.error("无法找到 platformViewRegistry");
+          }
+        })();
+      ''';
+      
+      js.context['eval'](jsCode);
+      Logger.d('WebCamera', '视图工厂注册成功: $_cameraViewType');
+    } catch (e) {
+      Logger.e('WebCamera', '注册视图工厂失败: $e');
     }
   }
 
@@ -180,8 +229,19 @@ class CameraServiceImpl implements CameraService {
       reader.readAsArrayBuffer(blob);
       await reader.onLoad.first;
 
-      final bytes = reader.result as ByteBuffer;
-      final uint8List = bytes.asUint8List();
+      Uint8List uint8List;
+      if (reader.result is ByteBuffer) {
+        final bytes = reader.result as ByteBuffer;
+        uint8List = bytes.asUint8List();
+      } else if (reader.result is Uint8List) {
+        uint8List = reader.result as Uint8List;
+      } else if (reader.result != null) {
+        Logger.d('WebCamera', '未知的result类型: ${reader.result.runtimeType}');
+        uint8List = Uint8List.fromList((reader.result as List).cast<int>());
+      } else {
+        Logger.e('WebCamera', '捕获失败：reader.result为空');
+        return null;
+      }
 
       Logger.d('WebCamera', '捕获成功，图像大小: ${uint8List.length} 字节');
       return uint8List;
