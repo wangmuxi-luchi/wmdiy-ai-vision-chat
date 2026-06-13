@@ -10,6 +10,18 @@ frontend/android/.gradle/
 frontend/android/local.properties
 frontend/android/app/build/
 
+# Auto-generated plugin registrant files (frontend_kotlin)
+frontend_kotlin/android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
+frontend_kotlin/ios/Runner/GeneratedPluginRegistrant.h
+frontend_kotlin/ios/Runner/GeneratedPluginRegistrant.m
+frontend_kotlin/linux/flutter/generated_plugin_registrant.cc
+frontend_kotlin/linux/flutter/generated_plugin_registrant.h
+frontend_kotlin/linux/flutter/generated_plugins.cmake
+frontend_kotlin/macos/Flutter/GeneratedPluginRegistrant.swift
+frontend_kotlin/windows/flutter/generated_plugin_registrant.cc
+frontend_kotlin/windows/flutter/generated_plugin_registrant.h
+frontend_kotlin/windows/flutter/generated_plugins.cmake
+
 # Python
 backend/__pycache__/
 backend/*.pyc
@@ -44,3 +56,5 @@ frontend_kotlin/windows/third_party/
 # frontend_kotlin/web/third_party/
 
 frontend_kotlin/web/third_party/tencentcloud-speech-sdk-js-main/asr/examples/config.js
+
+frontend/
