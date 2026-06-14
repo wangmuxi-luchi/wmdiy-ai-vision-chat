@@ -35,7 +35,6 @@ class MockCommunicationService implements CommunicationService {
   @override
   Future<String> sendImage(Uint8List imageData) async {
     final response = '图像分析结果：画面中有一个人正在说话，背景是室内环境';
-    _messageController.add(response);
     return response;
   }
 

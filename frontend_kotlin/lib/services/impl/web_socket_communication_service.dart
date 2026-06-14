@@ -304,7 +304,6 @@ class WebSocketCommunicationService implements CommunicationService {
           Logger.i('WebSocket', '[WS RECV 📥] 服务端确认连接: session=${jsonData['session_id']}, mode=${jsonData['mode']}');
         } else if (jsonData['type'] == 'frame_analyzed') {
           Logger.d('WebSocket', '[WS RECV 📥] 图像分析结果: ${jsonData['description']}');
-          _messageController.add(jsonData['description']);
         } else if (jsonData['type'] == 'user_message') {
           Logger.d('WebSocket', '[WS RECV 📥] 用户消息回显: ${jsonData['text']}');
         } else {
