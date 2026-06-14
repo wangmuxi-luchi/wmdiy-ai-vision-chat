@@ -217,22 +217,25 @@ function initAudioMeter(stream) {
     source.connect(scriptProcessor);
     scriptProcessor.connect(audioCtx.destination); // 需要连接才能触发
 
-    // 每 3 秒截取并发送
+    // 每 0.5 秒截取，静音跳过
+    const SILENCE_RMS = 0.003; // 静音阈值
     wavInterval = setInterval(() => {
-      if (micMuted || !connected || pcmSamples.length < 2400) { // 至少 0.1 秒
+      if (micMuted || !connected || pcmSamples.length < 2400) {
         pcmSamples = [];
         return;
       }
       const samples = pcmSamples.splice(0);
+
+      let sumSq = 0;
+      for (let i = 0; i < samples.length; i++) sumSq += samples[i] * samples[i];
+      const rms = Math.sqrt(sumSq / samples.length);
+      if (rms < SILENCE_RMS) return;
+
       const wavBuffer = encodeWAV(samples, 24000);
-      // ArrayBuffer → base64
-      const bytes = new Uint8Array(wavBuffer);
-      let binary = '';
-      for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-      const b64 = btoa(binary);
-      E.typingDots.classList.remove('hidden');
-      send({ type: 'audio', data: b64 });
-    }, 3000);
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(new Uint8Array(wavBuffer).buffer);
+      }
+    }, 500);
 
     const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
