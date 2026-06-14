@@ -148,12 +148,15 @@ class ASRSpeechRecognitionService implements SpeechRecognitionService {
         Logger.d('ASR', 'stopListening - 调用控制器stop方法');
         await _controller?.stop();
         Logger.d('ASR', 'stopListening - 控制器stop完成');
+        await _controller?.release();
+        _controller = null;
+        Logger.d('ASR', 'stopListening - 控制器已释放');
       } else {
         Logger.w('ASR', 'stopListening - 控制器为空，无需停止');
       }
     } catch (e) {
       Logger.e('ASR', 'stopListening - 停止识别失败: $e');
-      throw Exception("停止识别失败: $e");
+      // throw Exception("停止识别失败: $e");
     } finally {
       _isListening = false;
     }
