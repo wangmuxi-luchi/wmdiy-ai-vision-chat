@@ -152,6 +152,45 @@ class WebSocketCommunicationService implements CommunicationService {
   }
 
   @override
+  Future<String> sendSpeechMessage(String message) async {
+    if (!_isConnected()) {
+      Logger.e('WebSocket', '发送失败：未连接到服务器');
+      return '发送失败：未连接到服务器';
+    }
+
+    final request = jsonEncode({
+      'type': 'speech',
+      'data': message,
+    });
+
+    Logger.d('WebSocket', '[WS SEND 📤] 发送语音识别结果');
+    Logger.d('WebSocket', '[WS SEND 📤] 原始数据: $request');
+
+    try {
+      _channel!.sink.add(request);
+    } catch (e) {
+      Logger.e('WebSocket', '发送失败: $e');
+      return '发送失败: $e';
+    }
+
+    final completer = Completer<String>();
+    StreamSubscription? subscription;
+    subscription = _messageController.stream.listen((response) {
+      Logger.d('WebSocket', '收到回复: "${response.substring(0, response.length > 50 ? 50 : response.length)}${response.length > 50 ? '...' : ''}"');
+      completer.complete(response);
+      subscription?.cancel();
+    });
+
+    try {
+      return await completer.future.timeout(const Duration(seconds: 15));
+    } catch (e) {
+      Logger.e('WebSocket', '消息发送超时: $e');
+      subscription.cancel();
+      return '发送超时，请稍后重试';
+    }
+  }
+
+  @override
   Future<String> sendImage(Uint8List imageData) async {
     if (!_isConnected()) {
       Logger.e('WebSocket', '发送失败：未连接到服务器');
