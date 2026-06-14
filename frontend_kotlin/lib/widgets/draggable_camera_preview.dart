@@ -8,6 +8,7 @@ class CameraPreviewWidgetImpl extends StatelessWidget {
   final VoidCallback? onCapture;
   final VoidCallback? onSwitchCamera;
   final VoidCallback? onToggleFullscreen;
+  final VoidCallback? onMinimize;
   final bool hasMultipleCameras;
 
   const CameraPreviewWidgetImpl({
@@ -16,6 +17,7 @@ class CameraPreviewWidgetImpl extends StatelessWidget {
     this.onCapture,
     this.onSwitchCamera,
     this.onToggleFullscreen,
+    this.onMinimize,
     this.hasMultipleCameras = false,
   });
 
@@ -58,6 +60,17 @@ class CameraPreviewWidgetImpl extends StatelessWidget {
                     backgroundColor: Colors.black54,
                     onPressed: onToggleFullscreen,
                     child: const Icon(Icons.fullscreen),
+                  ),
+                ),
+              if (onMinimize != null)
+                Positioned(
+                  top: 10,
+                  right: 60,
+                  child: FloatingActionButton(
+                    mini: true,
+                    backgroundColor: Colors.black54,
+                    onPressed: onMinimize,
+                    child: const Icon(Icons.minimize),
                   ),
                 ),
               if (hasMultipleCameras && onSwitchCamera != null)
@@ -115,6 +128,34 @@ class DraggableCameraPreview extends StatefulWidget {
   State<DraggableCameraPreview> createState() => _DraggableCameraPreviewState();
 }
 
+class MinimizedCameraIndicator extends StatelessWidget {
+  final VoidCallback? onTap;
+  final double size;
+
+  const MinimizedCameraIndicator({
+    super.key,
+    this.onTap,
+    this.size = 40,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          color: Colors.black54,
+          borderRadius: BorderRadius.circular(size / 2),
+          border: Border.all(color: Colors.white, width: 1.5),
+        ),
+        child: const Icon(Icons.videocam, color: Colors.white, size: 20),
+      ),
+    );
+  }
+}
+
 class _DraggableCameraPreviewState extends State<DraggableCameraPreview> {
   double _width = 300;
   double _height = 400;
@@ -125,6 +166,7 @@ class _DraggableCameraPreviewState extends State<DraggableCameraPreview> {
   Offset _resizeStart = Offset.zero;
   double _startWidth = 0;
   double _startHeight = 0;
+  bool _isMinimized = false;
 
   @override
   void initState() {
@@ -198,8 +240,27 @@ class _DraggableCameraPreviewState extends State<DraggableCameraPreview> {
   Widget build(BuildContext context) {
     Logger.d(DraggableCameraPreview._tag, 'build() - controller: 存在');
     Logger.d(DraggableCameraPreview._tag, 'build() - isInitialized: ${widget.controller.value.isInitialized}');
-    Logger.d(DraggableCameraPreview._tag, 'build() - 位置: (${_position.dx.toStringAsFixed(2)}, ${_position.dy.toStringAsFixed(2)}), 尺寸: ${_width.toStringAsFixed(0)}x${_height.toStringAsFixed(0)}');
-    
+    Logger.d(DraggableCameraPreview._tag, 'build() - 位置: (${_position.dx.toStringAsFixed(2)}, ${_position.dy.toStringAsFixed(2)}), 尺寸: ${_width.toStringAsFixed(0)}x${_height.toStringAsFixed(0)}, minimized: $_isMinimized');
+
+    if (_isMinimized) {
+      return Stack(
+        children: [
+          Positioned(
+            left: _position.dx,
+            top: _position.dy,
+            child: GestureDetector(
+              onPanStart: _handlePanStart,
+              onPanUpdate: _handlePanUpdate,
+              onPanEnd: _handlePanEnd,
+              child: MinimizedCameraIndicator(
+                onTap: () => setState(() => _isMinimized = false),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
     return Stack(
       children: [
         Positioned(
@@ -223,6 +284,7 @@ class _DraggableCameraPreviewState extends State<DraggableCameraPreview> {
                   onCapture: widget.onCapture,
                   onSwitchCamera: widget.onSwitchCamera,
                   onToggleFullscreen: widget.onToggleFullscreen,
+                  onMinimize: () => setState(() => _isMinimized = true),
                   hasMultipleCameras: widget.hasMultipleCameras,
                 ),
               ),
