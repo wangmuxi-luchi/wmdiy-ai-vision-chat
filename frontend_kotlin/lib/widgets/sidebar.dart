@@ -22,7 +22,6 @@ class _SidebarState extends State<Sidebar> {
   late ConfigService _configService;
   bool _isSpeechConfigured = false;
   bool _isBackendConfigured = false;
-  bool _isLoading = true;
 
   @override
   void initState() {
@@ -38,7 +37,6 @@ class _SidebarState extends State<Sidebar> {
       _isSpeechConfigured = speechConfig.isValid;
       _isBackendConfigured = backendConfig.isValid && 
           backendConfig.host != 'localhost';
-      _isLoading = false;
     });
   }
 

@@ -19,6 +19,7 @@
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
   <meta name="description" content="A new Flutter project.">
+  <meta http-equiv="Permissions-Policy" content="camera=(self)">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
@@ -31,6 +32,77 @@
 
   <title>frontend_kotlin</title>
   <link rel="manifest" href="manifest.json">
+  
+  <!-- 腾讯云语音识别 JS SDK -->
+  <script src="third_party/tencentcloud-speech-sdk-js-main/asr/examples/lib/cryptojs.js"></script>
+  <script src="third_party/tencentcloud-speech-sdk-js-main/asr/dist/speechrecognizer.js"></script>
+  <script src="third_party/tencentcloud-speech-sdk-js-main/asr/app/webrecorder.js"></script>
+  <script src="third_party/tencentcloud-speech-sdk-js-main/asr/app/webaudiospeechrecognizer.js"></script>
+  <script>
+    window.config = {
+      secretKey: '',
+      secretId: '',
+      appId: 0,
+    };
+    
+    // 用于调试摄像头预览问题的函数
+    window.logVideoElementStatus = function(context) {
+      var videos = document.getElementsByTagName('video');
+      console.log('========================================');
+      console.log('[Video Status] Context: ' + context);
+      console.log('[Video Status] 找到 ' + videos.length + ' 个 video 元素');
+      
+      for (var i = 0; i < videos.length; i++) {
+        var video = videos[i];
+        console.log('----------------------------------------');
+        console.log('[Video ' + i + '] id: ' + video.id);
+        console.log('[Video ' + i + '] src: ' + video.src);
+        console.log('[Video ' + i + '] srcObject: ' + (video.srcObject ? 'MediaStream' : 'null'));
+        console.log('[Video ' + i + '] width: ' + video.width + ', height: ' + video.height);
+        console.log('[Video ' + i + '] videoWidth: ' + video.videoWidth + ', videoHeight: ' + video.videoHeight);
+        console.log('[Video ' + i + '] paused: ' + video.paused);
+        console.log('[Video ' + i + '] ended: ' + video.ended);
+        console.log('[Video ' + i + '] muted: ' + video.muted);
+        console.log('[Video ' + i + '] volume: ' + video.volume);
+        console.log('[Video ' + i + '] playbackRate: ' + video.playbackRate);
+        console.log('[Video ' + i + '] readyState: ' + video.readyState + ' (0=HAVE_NOTHING, 1=HAVE_METADATA, 2=HAVE_CURRENT_DATA, 3=HAVE_FUTURE_DATA, 4=HAVE_ENOUGH_DATA)');
+        console.log('[Video ' + i + '] networkState: ' + video.networkState + ' (0=NETWORK_EMPTY, 1=NETWORK_IDLE, 2=NETWORK_LOADING, 3=NETWORK_NO_SOURCE)');
+        console.log('[Video ' + i + '] className: ' + video.className);
+        console.log('[Video ' + i + '] style.display: ' + video.style.display);
+        console.log('[Video ' + i + '] style.visibility: ' + video.style.visibility);
+        console.log('[Video ' + i + '] isConnected: ' + video.isConnected);
+        console.log('[Video ' + i + '] parentElement: ' + (video.parentElement ? video.parentElement.tagName : 'null'));
+        
+        // 检查是否有异常
+        if (video.error) {
+          console.error('[Video ' + i + '] ERROR: ' + video.error.message);
+        }
+      }
+      
+      console.log('========================================');
+    };
+    
+    // 用于确保视频播放的函数 - 解决 Flutter Web CameraPreview 暂停问题
+    window.ensureVideoPlaying = function() {
+      var videos = document.getElementsByTagName('video');
+      console.log('----------------------------------------');
+      console.log('[ensureVideoPlaying] 找到 ' + videos.length + ' 个 video 元素');
+      
+      for (var i = 0; i < videos.length; i++) {
+        var video = videos[i];
+        console.log('[ensureVideoPlaying] Video ' + i + ' - srcObject: ' + (video.srcObject ? 'MediaStream' : 'null') + ', paused: ' + video.paused);
+        
+        if (video.srcObject && video.paused) {
+          console.log('[ensureVideoPlaying] Video ' + i + ' 正在调用 play()...');
+          video.play().then(function() {
+            console.log('[ensureVideoPlaying] Video 播放成功');
+          }).catch(function(error) {
+            console.error('[ensureVideoPlaying] Video 播放失败: ' + error.message);
+          });
+        }
+      }
+    };
+  </script>
 </head>
 <body>
   <!--

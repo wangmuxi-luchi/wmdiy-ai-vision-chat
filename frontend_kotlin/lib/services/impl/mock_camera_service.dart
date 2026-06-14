@@ -1,4 +1,3 @@
-import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import '../camera_service.dart';
@@ -21,6 +20,9 @@ class MockCameraService implements CameraService {
   
   @override
   bool get isSwitching => _isSwitching;
+  
+  @override
+  double get aspectRatio => 4.0 / 3.0;
   
   @override
   CameraController? get controller => null;
@@ -70,6 +72,11 @@ class MockCameraService implements CameraService {
   Future<void> stopPreview() async {
     await Future.delayed(const Duration(milliseconds: 100));
     _isPreviewing = false;
+  }
+  
+  @override
+  void restartPreview() {
+    // Mock implementation
   }
   
   @override

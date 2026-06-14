@@ -47,6 +47,8 @@ dependencies:
   
   # 摄像头支持
   camera: ^0.10.5+5
+
+  provider: ^6.0.5
   
   # 图像选择器（用于从相册选择图片）
   image_picker: ^1.0.4
@@ -56,6 +58,13 @@ dependencies:
   
   # 本地存储（持久化配置）
   shared_preferences: ^2.2.3
+  js: ^0.7.2
+  
+  # 日志库
+  logger: ^1.1.0
+  
+  # 文字转语音（跨平台：Android/iOS/Web）
+  flutter_tts: ^4.2.5
   
 
 dev_dependencies:
@@ -83,6 +92,9 @@ flutter:
   # Environment variables
   assets:
     - .env
+    - web/third_party/tencentcloud-speech-sdk-js-main/asr/examples/lib/cryptojs.js
+    - web/third_party/tencentcloud-speech-sdk-js-main/asr/dist/speechrecognizer.js
+    - web/third_party/tencentcloud-speech-sdk-js-main/asr/app/webrecorder.js
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

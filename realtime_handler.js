@@ -19,14 +19,63 @@ class RealtimeManager {
     this.connected = false;
     this.audioBuffer = Buffer.alloc(0);
     this.bufferThreshold = 8192 * 2; // 16KB PCM 缓冲区阈值
+    
+    // 捕获底层 WebSocket 错误，防止进程崩溃
+    this.client.on('error', (err) => {
+      console.error(`[Realtime] WebSocket 错误 ${sessionId}:`, err.message);
+      this.connected = false;
+    });
   }
 
   async connect() {
     console.log(`[Realtime] 连接中... session=${this.sessionId}`);
-    await this.client.connect(MODEL);
+    
+    // 使用 Promise.race 来处理连接超时和错误
+    const connectPromise = new Promise((resolve, reject) => {
+      // 设置错误监听器
+      const errorHandler = (err) => {
+        console.error(`[Realtime] WebSocket 错误 ${this.sessionId}:`, err.message);
+        this.connected = false;
+        reject(err);
+      };
+      
+      // 监听各种错误事件
+      this.client.on('error', errorHandler);
+      this.client.on('close', (code, reason) => {
+        if (!this.connected) {
+          errorHandler(new Error(`连接关闭: code=${code}, reason=${reason}`));
+        }
+      });
+      
+      // 执行连接
+      this.client.connect(MODEL)
+        .then(() => {
+          this.client.off('error', errorHandler);
+          resolve();
+        })
+        .catch((err) => {
+          this.client.off('error', errorHandler);
+          errorHandler(err);
+        });
+    });
+    
+    // 添加超时
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => {
+        reject(new Error('连接超时'));
+      }, 10000); // 10秒超时
+    });
+    
+    try {
+      await Promise.race([connectPromise, timeoutPromise]);
+    } catch (err) {
+      console.error(`[Realtime] 连接失败 ${this.sessionId}:`, err.message);
+      throw err;
+    }
     console.log(`[Realtime] 已连接`);
 
-    await this.client.updateSession({
+    try {
+      await this.client.updateSession({
       instructions: `你是AI视觉对话助手。你能通过摄像头看到用户，通过麦克风听到用户。
 用中文简洁自然地回应，像朋友聊天一样。2-4句话为宜。`,
       turn_detection: { type: 'server_vad' },
@@ -83,6 +132,12 @@ class RealtimeManager {
     this.client.on(ServerEventType.Error, (ev) => {
       console.error('[Realtime] 错误:', ev.error?.message || ev.error);
     });
+
+    } catch (err) {
+      console.error(`[Realtime] 更新会话失败 ${this.sessionId}:`, err.message);
+      this.client.disconnect();
+      throw err;
+    }
 
     this.connected = true;
   }

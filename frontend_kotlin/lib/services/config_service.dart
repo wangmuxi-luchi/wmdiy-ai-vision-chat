@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 class ConfigService {
   static const String _speechConfigKey = 'speech_config';
@@ -8,10 +9,7 @@ class ConfigService {
   static SharedPreferences? _instance;
 
   static Future<SharedPreferences> _getInstance() async {
-    if (_instance == null) {
-      _instance = await SharedPreferences.getInstance();
-    }
-    return _instance!;
+    return _instance ??= await SharedPreferences.getInstance();
   }
 
   Future<void> init() async {
@@ -24,12 +22,28 @@ class ConfigService {
     if (jsonString != null) {
       try {
         final Map<String, dynamic> json = jsonDecode(jsonString);
-        return SpeechConfig.fromJson(json);
+        final config = SpeechConfig.fromJson(json);
+        if (config.isValid) {
+          return config;
+        }
       } catch (e) {
-        return SpeechConfig();
+        // 解析失败，使用默认配置
       }
     }
-    return SpeechConfig();
+    return _getDefaultSpeechConfig();
+  }
+
+  SpeechConfig _getDefaultSpeechConfig() {
+    final envAppId = dotenv.env['TENCENT_APP_ID'] ?? '';
+    final envSecretId = dotenv.env['TENCENT_SECRET_ID'] ?? '';
+    final envSecretKey = dotenv.env['TENCENT_SECRET_KEY'] ?? '';
+    
+    return SpeechConfig(
+      appId: envAppId,
+      secretId: envSecretId,
+      secretKey: envSecretKey,
+      region: dotenv.env['TENCENT_REGION'] ?? 'ap-beijing',
+    );
   }
 
   Future<void> saveSpeechConfig(SpeechConfig config) async {
@@ -54,7 +68,15 @@ class ConfigService {
         return BackendConfig();
       }
     }
-    return BackendConfig();
+    return _getDefaultBackendConfig();
+  }
+
+  BackendConfig _getDefaultBackendConfig() {
+    return BackendConfig(
+      host: dotenv.env['BACKEND_HOST'] ?? 'localhost',
+      port: int.tryParse(dotenv.env['BACKEND_PORT'] ?? '8000') ?? 8000,
+      protocol: dotenv.env['BACKEND_PROTOCOL'] ?? 'ws',
+    );
   }
 
   Future<void> saveBackendConfig(BackendConfig config) async {

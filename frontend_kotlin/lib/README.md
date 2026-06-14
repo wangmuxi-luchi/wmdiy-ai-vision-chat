@@ -136,6 +136,18 @@ flutter run --dart-define=BACKEND_HOST=192.168.1.100 --dart-define=BACKEND_PORT=
 
 ---
 
+## 🔧 配置文件
+
+| 文件 | 配置项 | 默认值 |
+|------|--------|--------|
+| `.env` | `BACKEND_HOST` | 192.168.0.106 |
+| `.env` | `BACKEND_PORT` | 8000 |
+| `.env` | `TENCENT_APP_ID` | 1442865350 |
+| `.env` | `TENCENT_SECRET_ID` | - |
+| `.env` | `TENCENT_SECRET_KEY` | - |
+
+---
+
 ## 📊 服务依赖关系
 
 ```

@@ -1,12 +1,7 @@
 import 'dart:convert';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import '../text_processor_service.dart';
 
 class BackendTextProcessorService implements TextProcessorService {
-  final String _baseUrl;
-
-  BackendTextProcessorService() 
-    : _baseUrl = dotenv.env['WS_URL'] ?? 'ws://localhost:8000/ws';
 
   @override
   Future<String> processText(String text) async {

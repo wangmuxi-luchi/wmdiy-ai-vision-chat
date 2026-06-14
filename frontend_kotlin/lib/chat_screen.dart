@@ -1,20 +1,21 @@
 import 'dart:async';
-import 'dart:typed_data';
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'package:camera/camera.dart';
 import 'services/locator.dart';
 import 'services/config_service.dart';
 import 'services/speech_recognition_service.dart';
-import 'services/text_processor_service.dart';
 import 'services/message_receiver_service.dart';
 import 'services/impl/message_receiver_service_impl.dart';
 import 'services/command_receiver_service.dart';
 import 'services/camera_image_service.dart';
-import 'services/camera_service.dart';
 import 'services/communication_service.dart';
 import 'widgets/sidebar.dart';
+import 'widgets/draggable_camera_preview.dart';
+import 'utils/logger.dart';
+import 'package:provider/provider.dart';
+import 'camera_manager.dart';
+import 'services/tts/tts_service.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -25,26 +26,24 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   late SpeechRecognitionService _speechService;
-  late TextProcessorService _textProcessorService;
   late MessageReceiverService _messageReceiverService;
   late CommandReceiverService _commandReceiverService;
   late CameraImageService _cameraImageService;
-  late CameraService _cameraService;
   late CommunicationService _communicationService;
   late ConfigService _configService;
   StreamSubscription<Command>? _commandSubscription;
   StreamSubscription<String>? _messageSubscription;
+  StreamSubscription<ASRResult>? _asrSubscription;
   
   bool _isMicOn = false;
-  bool _isCameraOn = true;
-  bool _isFullscreen = false;
-  bool _isCameraInitialized = false;
   bool _isSidebarOpen = false;
   bool _isAutoSendSpeech = false; // 语音转文字自动发送开关
+  bool _isTtsEnabled = false; // 文字转语音朗读开关
   bool _isStoppingRecording = false; // 是否正在停止录音（用于防止关闭麦克风时接收缓存结果）
-  int _cameraPreviewKey = 0;
+  bool _isTtsSpeaking = false; // 是否正在进行TTS朗读（防止朗读期间误开麦克风）
 
   String _pendingSpeechText = '';
+  String _confirmedSpeechText = ''; // 已确认的文本（一句话结束后累加）
   final List<ChatMessage> _messages = [];
   final List<CameraLog> _cameraLogs = [];
   int _imageCount = 0;
@@ -62,22 +61,40 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       setupLocator();
       _speechService = locator<SpeechRecognitionService>();
-      _textProcessorService = locator<TextProcessorService>();
       _messageReceiverService = locator<MessageReceiverService>();
       _commandReceiverService = locator<CommandReceiverService>();
       _cameraImageService = locator<CameraImageService>();
-      _cameraService = locator<CameraService>();
       _communicationService = locator<CommunicationService>();
       _configService = locator<ConfigService>();
       await _configService.init();
       
+      // 加载语音配置并设置到语音服务
+      await _loadSpeechConfig();
+      
       _subscribeToCommands();
       _subscribeToMessages();
-      await _initializeCamera();
       await _connectToServer();
     } catch (e, stackTrace) {
-      debugPrint('初始化异常: $e\n$stackTrace');
+      Logger.e('ChatScreen', '初始化异常: $e\n$stackTrace', e);
       _showErrorSnackBar('初始化失败: ${e.toString()}');
+    }
+  }
+  
+  Future<void> _loadSpeechConfig() async {
+    try {
+      final speechConfig = await _configService.getSpeechConfig();
+      if (speechConfig.isValid) {
+        _speechService.setCredentials(
+          appId: int.parse(speechConfig.appId),
+          secretId: speechConfig.secretId,
+          secretKey: speechConfig.secretKey,
+        );
+        Logger.i('ChatScreen', '语音配置已加载: appId=${speechConfig.appId}');
+      } else {
+        Logger.w('ChatScreen', '语音配置无效，请在侧边栏设置');
+      }
+    } catch (e) {
+      Logger.e('ChatScreen', '加载语音配置失败', e);
     }
   }
   
@@ -96,10 +113,10 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _connectToServer() async {
     bool connected = await _communicationService.connect();
     if (connected) {
-      debugPrint('已连接到后端服务器');
+      Logger.i('ChatScreen', '已连接到后端服务器');
       _startMessageReceiver();
     } else {
-      debugPrint('连接后端服务器失败');
+      Logger.w('ChatScreen', '连接后端服务器失败');
     }
   }
   
@@ -110,24 +127,43 @@ class _ChatScreenState extends State<ChatScreen> {
   }
   
   void _subscribeToMessages() {
-    _messageSubscription = _communicationService.messageStream.listen((message) {
+    _messageSubscription = _communicationService.messageStream.listen((message) async {
+      Logger.d('ChatScreen', '[TTS 检查] 收到消息: "${message.length > 50 ? '${message.substring(0, 50)}...' : message}"');
+      Logger.d('ChatScreen', '[TTS 检查] _isTtsEnabled = $_isTtsEnabled');
       if (mounted) {
         setState(() {
           _messages.add(ChatMessage(text: message, isUser: false));
         });
         _scrollToBottom();
+
+        if (_isTtsEnabled) {
+          try {
+            final tts = context.read<TtsService>();
+
+            final bool wasMicOn = _isMicOn;
+            if (wasMicOn) {
+              Logger.d('ChatScreen', '[TTS] TTS朗读前自动关闭麦克风');
+              _toggleMic();
+            }
+
+            _isTtsSpeaking = true;
+            Logger.d('ChatScreen', '[TTS] 开始朗读...');
+            await tts.speak(message);
+            _isTtsSpeaking = false;
+
+            if (wasMicOn && _isTtsEnabled && mounted) {
+              Logger.d('ChatScreen', '[TTS] 朗读完成，自动恢复麦克风');
+              _toggleMic();
+            }
+          } catch (e) {
+            _isTtsSpeaking = false;
+            Logger.e('ChatScreen', 'TTS 播放失败: $e', e);
+          }
+        } else {
+          Logger.d('ChatScreen', '[TTS] 未开启朗读，跳过');
+        }
       }
     });
-  }
-  
-  Future<void> _initializeCamera() async {
-    bool success = await _cameraService.initialize();
-    setState(() {
-      _isCameraInitialized = success;
-    });
-    if (success && _isCameraOn) {
-      await _cameraService.startPreview();
-    }
   }
 
   void _subscribeToCommands() {
@@ -142,7 +178,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _handleSendCameraImage(command);
         break;
       default:
-        debugPrint('Unknown command type: ${command.type}');
+        Logger.w('ChatScreen', 'Unknown command type: ${command.type}');
     }
   }
 
@@ -163,32 +199,39 @@ class _ChatScreenState extends State<ChatScreen> {
       ));
     });
     
-    _cameraService.captureImage().then((imageData) async {
-      if (imageData != null) {
-        if (_communicationService.isConnected) {
-          try {
-            await _communicationService.sendImage(imageData);
-            setState(() {
-              _cameraLogs.last.status = '发送成功';
-            });
-          } catch (e) {
-            setState(() {
-              _cameraLogs.last.status = '发送失败: $e';
-            });
-          }
-        } else {
-          _cameraImageService.analyzeImage('camera_frame_data').then((analysisResult) {
-            debugPrint('图像分析结果: $analysisResult');
-            setState(() {
-              _cameraLogs.last.status = '离线分析完成（未发送）';
-            });
+    final manager = context.read<CameraManager>();
+    if (manager.controller == null) {
+      setState(() {
+        _cameraLogs.last.status = '捕获失败: 摄像头未初始化';
+      });
+      return;
+    }
+    
+    manager.controller!.takePicture().then((XFile file) async {
+      final imageData = await file.readAsBytes();
+      if (_communicationService.isConnected) {
+        try {
+          await _communicationService.sendImage(imageData);
+          setState(() {
+            _cameraLogs.last.status = '发送成功';
+          });
+        } catch (e) {
+          setState(() {
+            _cameraLogs.last.status = '发送失败: $e';
           });
         }
       } else {
-        setState(() {
-          _cameraLogs.last.status = '捕获失败';
+        _cameraImageService.analyzeImage('camera_frame_data').then((analysisResult) {
+          Logger.d('ChatScreen', '图像分析结果: $analysisResult');
+          setState(() {
+            _cameraLogs.last.status = '离线分析完成（未发送）';
+          });
         });
       }
+    }).catchError((e) {
+      setState(() {
+        _cameraLogs.last.status = '捕获失败: $e';
+      });
     });
   }
 
@@ -201,51 +244,68 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_messageReceiverService is MessageReceiverServiceImpl) {
       (_messageReceiverService as MessageReceiverServiceImpl).dispose();
     }
-    _cameraService.dispose();
     _communicationService.dispose();
     _commandSubscription?.cancel();
     _messageSubscription?.cancel();
+    _asrSubscription?.cancel();
     super.dispose();
   }
 
-  void _toggleMic() {
+  Future<void> _toggleMic() async {
+    if (_isTtsSpeaking) {
+      Logger.d('ChatScreen', '[TTS] 朗读中，禁止打开麦克风');
+      return;
+    }
+    Logger.d('ChatScreen', '切换麦克风状态: 当前=$_isMicOn');
     setState(() => _isMicOn = !_isMicOn);
     if (_isMicOn) {
       _startRecording();
     } else {
-      _stopRecording();
+      await _stopRecording();
     }
   }
 
   Future<void> _startRecording() async {
-    setState(() {
-      _pendingSpeechText = '';
-    });
-
+    Logger.d('ChatScreen', '========== 开始录音 ==========');
     try {
+      Logger.d('ChatScreen', '调用 speechService.startListening()...');
       Stream<ASRResult> asrStream = _speechService.startListening();
+      Logger.d('ChatScreen', 'startListening() 返回成功，开始监听Stream');
       
-      asrStream.listen(
+      await _asrSubscription?.cancel();
+      _asrSubscription = asrStream.listen(
         (result) {
           // 如果正在停止录音，忽略收到的数据（可能是SDK缓存的旧数据）
           if (!mounted || _isStoppingRecording) {
+            Logger.d('ChatScreen', '收到识别结果但已停止，忽略: text=${result.text}');
             return;
           }
           
           String text = result.text;
-          bool isFinal = result.isFinal ?? false;
+          bool isFinal = result.isFinal;
+          Logger.d('ChatScreen', '收到识别结果: text="$text", isFinal=$isFinal');
           
           setState(() {
-            _pendingSpeechText = text;
-            _speechInputController.text = text;
+            if (isFinal) {
+              // 一句话结束（最终结果）：累加到已确认文本
+              _confirmedSpeechText += text;
+              _pendingSpeechText = _confirmedSpeechText;
+            } else {
+              // 识别变化（中间结果）：显示已确认文本 + 当前识别内容
+              _pendingSpeechText = _confirmedSpeechText + text;
+            }
+            _speechInputController.text = _pendingSpeechText;
           });
+          Logger.d('ChatScreen', 'UI已更新识别结果: "$_pendingSpeechText"');
           
           // 如果开启自动发送且收到最终结果，立即发送
-          if (_isAutoSendSpeech && isFinal && text.trim().isNotEmpty) {
+          if (_isAutoSendSpeech && isFinal && _pendingSpeechText.trim().isNotEmpty) {
+            Logger.d('ChatScreen', '自动发送已开启，发送识别结果');
             _sendPendingSpeech();
           }
         },
         onError: (e) {
+          Logger.e('ChatScreen', '语音识别错误: $e');
           if (mounted) {
             setState(() {
               _pendingSpeechText = "错误: $e";
@@ -254,6 +314,7 @@ class _ChatScreenState extends State<ChatScreen> {
           }
         },
         onDone: () {
+          Logger.d('ChatScreen', '语音识别Stream结束');
           if (mounted && _isMicOn) {
             setState(() {
               _isMicOn = false;
@@ -261,7 +322,9 @@ class _ChatScreenState extends State<ChatScreen> {
           }
         },
       );
+      Logger.d('ChatScreen', 'Stream监听已设置完成');
     } catch (e) {
+      Logger.e('ChatScreen', '启动录音异常: $e');
       if (mounted) {
         setState(() {
           _pendingSpeechText = "错误: $e";
@@ -276,9 +339,11 @@ class _ChatScreenState extends State<ChatScreen> {
       _isStoppingRecording = true;
     });
     try {
+      await _asrSubscription?.cancel();
+      _asrSubscription = null;
       await _speechService.stopListening();
     } catch (e) {
-      debugPrint("Error stopping recording: $e");
+      Logger.e('ChatScreen', 'Error stopping recording: $e');
     }
     setState(() {
       _isStoppingRecording = false;
@@ -286,44 +351,34 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _toggleCamera() {
-    setState(() => _isCameraOn = !_isCameraOn);
-    if (_isCameraInitialized) {
-      if (_isCameraOn) {
-        _cameraService.startPreview();
-      } else {
-        _cameraService.stopPreview();
-      }
+    final manager = context.read<CameraManager>();
+    manager.toggleCameraOn();
+  }
+
+  void _toggleTts() {
+    setState(() {
+      _isTtsEnabled = !_isTtsEnabled;
+    });
+    Logger.i('ChatScreen', '[TTS] 朗读开关: $_isTtsEnabled');
+    if (!_isTtsEnabled) {
+      _isTtsSpeaking = false;
+      try {
+        final tts = context.read<TtsService>();
+        tts.stop();
+      } catch (_) {}
     }
   }
   
   Future<void> _switchCamera() async {
-    if (_cameraService.isSwitching) {
-      return;
-    }
-    
-    setState(() {
-      _isCameraInitialized = false;
-    });
-    
-    bool success = await _cameraService.switchCamera();
-    
-    if (success && mounted) {
-      setState(() {
-        _isCameraInitialized = true;
-      });
-    }
+    final manager = context.read<CameraManager>();
+    await manager.toggleCamera();
   }
   
-  Future<void> _waitForNextFrame() {
-    final completer = Completer<void>();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      completer.complete();
-    });
-    return completer.future;
-  }
-
   void _toggleFullscreen() {
-    setState(() => _isFullscreen = !_isFullscreen);
+    final manager = context.read<CameraManager>();
+    Logger.d('ChatScreen', '_toggleFullscreen() - 调用前: isFullscreen=${manager.isFullscreen}, controller=${manager.controller != null ? '存在' : 'null'}');
+    manager.toggleFullscreen();
+    Logger.d('ChatScreen', '_toggleFullscreen() - 调用后: isFullscreen=${manager.isFullscreen}');
   }
 
   void _sendUserMessage(String text) {
@@ -339,8 +394,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _communicationService.sendTextMessage(text).then((reply) {
         // 回复通过 messageStream 接收
       }).catchError((error) {
-        debugPrint('发送消息失败: $error');
-        return '';
+        Logger.e('ChatScreen', '发送消息失败: $error');
       });
     } else {
       _messageReceiverService.receiveMessage(text).then((replyText) {
@@ -361,6 +415,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _sendUserMessage(_pendingSpeechText);
     setState(() {
       _pendingSpeechText = '';
+      _confirmedSpeechText = ''; // 清空已确认文本
       _speechInputController.clear();
     });
   }
@@ -383,8 +438,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final manager = context.watch<CameraManager>();
+    
     return Scaffold(
-      appBar: _isFullscreen ? null : AppBar(
+      appBar: manager.isFullscreen ? null : AppBar(
         title: const Text('语音视频聊天助手'),
         leading: IconButton(
           icon: const Icon(Icons.menu),
@@ -397,14 +454,20 @@ class _ChatScreenState extends State<ChatScreen> {
             onPressed: _toggleMic,
           ),
           IconButton(
-            icon: Icon(_isCameraOn ? Icons.videocam : Icons.videocam_off),
+            icon: Icon(manager.isCameraOn ? Icons.videocam : Icons.videocam_off),
             onPressed: _toggleCamera,
+          ),
+          IconButton(
+            icon: Icon(_isTtsEnabled ? Icons.volume_up : Icons.volume_off),
+            color: _isTtsEnabled ? Colors.blue : null,
+            onPressed: _toggleTts,
+            tooltip: _isTtsEnabled ? '关闭朗读' : '开启朗读',
           ),
         ],
       ),
       body: Stack(
         children: [
-          _isFullscreen ? _buildFullscreenCamera() : _buildNormalLayout(),
+          manager.isFullscreen ? _buildCameraPreview(isFullscreen: true) : _buildNormalLayout(context),
           if (_isSidebarOpen)
             Stack(
               children: [
@@ -427,126 +490,159 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Widget _buildNormalLayout() {
-    return Column(
-      children: [
-        _buildCameraPreview(isFullscreen: false),
-        Expanded(child: _buildMessageList()),
-        _buildPendingSpeechArea(),
-        _buildInputBar(),
-      ],
-    );
-  }
-
-  Widget _buildFullscreenCamera() {
+  Widget _buildNormalLayout(BuildContext context) {
+    final manager = context.watch<CameraManager>();
+    final controllerExists = manager.controller != null;
+    
+    Logger.d('ChatScreen', '_buildNormalLayout() - 开始构建');
+    Logger.d('ChatScreen', '_buildNormalLayout() - controller=${controllerExists ? '存在' : 'null'}');
+    Logger.d('ChatScreen', '_buildNormalLayout() - isFullscreen=${manager.isFullscreen}');
+    Logger.d('ChatScreen', '_buildNormalLayout() - isCameraOn=${manager.isCameraOn}');
+    
+    if (controllerExists) {
+      Logger.d('ChatScreen', '_buildNormalLayout() - controller状态: isInitialized=${manager.controller!.value.isInitialized}, isStreamingImages=${manager.controller!.value.isStreamingImages}');
+      Logger.d('ChatScreen', '_buildNormalLayout() - 将${manager.isCameraOn ? '显示' : '隐藏'}浮动摄像头预览窗口');
+    }
+    
     return Stack(
       children: [
-        _buildCameraPreview(isFullscreen: true),
-        Positioned(
-          top: 40,
-          left: 16,
-          child: Row(
-            children: [
-              IconButton(
-                icon: Icon(_isMicOn ? Icons.mic : Icons.mic_off, color: _isMicOn ? Colors.red : Colors.white, size: 32),
-                onPressed: _toggleMic,
-              ),
-              IconButton(
-                icon: Icon(_isCameraOn ? Icons.videocam : Icons.videocam_off, color: Colors.white, size: 32),
-                onPressed: _toggleCamera,
-              ),
-              if (_cameraService.hasMultipleCameras)
-                IconButton(
-                  icon: const Icon(Icons.flip_camera_android, color: Colors.white, size: 32),
-                  onPressed: _switchCamera,
-                ),
-            ],
+        Column(
+          children: [
+            Expanded(child: _buildMessageList()),
+            _buildPendingSpeechArea(),
+            _buildInputBar(),
+          ],
+        ),
+        // 浮动的可拖动摄像头预览窗口
+        if (controllerExists && manager.isCameraOn)
+          DraggableCameraPreview(
+            controller: manager.controller!,
+            initialWidth: 150,
+            initialHeight: 200,
+            onToggleFullscreen: _toggleFullscreen,
+            onCapture: () => _sendCameraImage(CameraTriggerType.manual),
+            onSwitchCamera: _switchCamera,
+            hasMultipleCameras: manager.cameras.length > 1,
           ),
-        ),
-        Positioned(
-          top: 40,
-          right: 16,
-          child: IconButton(
-            icon: const Icon(Icons.fullscreen_exit, color: Colors.white, size: 32),
-            onPressed: _toggleFullscreen,
-          ),
-        ),
-        Positioned(
-          bottom: 20,
-          left: 20,
-          child: _buildCameraLogList(),
-        ),
-        Positioned(
-          bottom: 20,
-          right: 20,
-          child: IconButton(
-            icon: const Icon(Icons.camera, color: Colors.white, size: 48),
-            onPressed: () => _sendCameraImage(CameraTriggerType.manual),
-            tooltip: '手动发送图像',
-          ),
-        ),
       ],
     );
   }
 
   Widget _buildCameraPreview({required bool isFullscreen}) {
+    final manager = context.watch<CameraManager>();
+    final controllerExists = manager.controller != null;
+    final isPreviewEnabled = manager.isCameraOn;
+    final willShowCameraPreview = controllerExists && isPreviewEnabled;
+    
+    Logger.d('ChatScreen', '_buildCameraPreview() - 开始构建');
+    Logger.d('ChatScreen', '_buildCameraPreview() - isFullscreen=$isFullscreen');
+    Logger.d('ChatScreen', '_buildCameraPreview() - controller=${controllerExists ? '存在' : 'null'}');
+    Logger.d('ChatScreen', '_buildCameraPreview() - isCameraOn=$isPreviewEnabled');
+    Logger.d('ChatScreen', '_buildCameraPreview() - 将${willShowCameraPreview ? '显示 CameraPreview' : '显示占位图标'}');
+    
+    if (controllerExists) {
+      Logger.d('ChatScreen', '_buildCameraPreview() - controller状态: isInitialized=${manager.controller!.value.isInitialized}, isStreamingImages=${manager.controller!.value.isStreamingImages}');
+    }
+    
     return RepaintBoundary(
-      child: GestureDetector(
-        onTap: isFullscreen ? null : _toggleFullscreen,
-        child: Container(
-          margin: isFullscreen ? EdgeInsets.zero : const EdgeInsets.all(8),
-          height: isFullscreen ? double.infinity : 200,
-          width: double.infinity,
-          decoration: BoxDecoration(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          Logger.d('ChatScreen', '_buildCameraPreview() - LayoutBuilder constraints: ${constraints.maxWidth}x${constraints.maxHeight}');
+          
+          return Container(
             color: Colors.black,
-            borderRadius: isFullscreen ? null : BorderRadius.circular(16),
-          ),
-          child: Stack(
-            children: [
-              if (_isCameraInitialized && _isCameraOn && _cameraService.controller != null)
-                Center(
-                  child: CameraPreviewWidget(key: ValueKey(_cameraPreviewKey)),
-                )
-              else
-                Center(
-                  child: _isCameraOn
-                      ? const Icon(Icons.videocam, size: 48, color: Colors.white70)
-                      : const Icon(Icons.videocam_off, size: 48, color: Colors.white70),
-                ),
-              if (!isFullscreen)
-                Align(
-                  alignment: Alignment.topRight,
-                  child: Padding(
-                    padding: const EdgeInsets.all(8),
+            width: constraints.maxWidth,
+            height: constraints.maxHeight,
+            child: Stack(
+              children: [
+                if (willShowCameraPreview)
+                  Center(
+                    child: CameraPreview(manager.controller!),
+                  )
+                else
+                  Center(
+                    child: isPreviewEnabled
+                        ? const Icon(Icons.videocam, size: 48, color: Colors.white70)
+                        : const Icon(Icons.videocam_off, size: 48, color: Colors.white70),
+                  ),
+                // 全屏模式下的控制按钮
+                if (isFullscreen)
+                  Positioned(
+                    top: 40,
+                    left: 16,
                     child: Row(
                       children: [
                         IconButton(
-                          icon: const Icon(Icons.camera, color: Colors.white),
-                          onPressed: () => _sendCameraImage(CameraTriggerType.manual),
-                          tooltip: '手动发送图像',
+                          icon: Icon(_isMicOn ? Icons.mic : Icons.mic_off, color: _isMicOn ? Colors.red : Colors.white, size: 32),
+                          onPressed: _toggleMic,
                         ),
-                        if (_cameraService.hasMultipleCameras)
+                        IconButton(
+                          icon: Icon(manager.isCameraOn ? Icons.videocam : Icons.videocam_off, color: Colors.white, size: 32),
+                          onPressed: _toggleCamera,
+                        ),
+                        if (manager.cameras.length > 1)
                           IconButton(
-                            icon: const Icon(Icons.flip_camera_android, color: Colors.white),
+                            icon: const Icon(Icons.flip_camera_android, color: Colors.white, size: 32),
                             onPressed: _switchCamera,
-                            tooltip: '切换摄像头',
                           ),
                         IconButton(
-                          icon: const Icon(Icons.fullscreen, color: Colors.white),
-                          onPressed: _toggleFullscreen,
+                          icon: Icon(_isTtsEnabled ? Icons.volume_up : Icons.volume_off, color: Colors.white, size: 32),
+                          onPressed: _toggleTts,
+                          tooltip: _isTtsEnabled ? '关闭朗读' : '开启朗读',
                         ),
                       ],
                     ),
                   ),
-                ),
-              if (!isFullscreen)
-                Align(
-                  alignment: Alignment.bottomLeft,
-                  child: _buildCameraLogList(),
-                ),
-            ],
-          ),
-        ),
+                if (isFullscreen)
+                  Positioned(
+                    top: 40,
+                    right: 16,
+                    child: IconButton(
+                      icon: const Icon(Icons.fullscreen_exit, color: Colors.white, size: 32),
+                      onPressed: _toggleFullscreen,
+                    ),
+                  ),
+                if (isFullscreen)
+                  Positioned(
+                    bottom: 20,
+                    left: 20,
+                    child: _buildCameraLogList(),
+                  ),
+                if (isFullscreen)
+                  Positioned(
+                    bottom: 20,
+                    right: 20,
+                    child: IconButton(
+                      icon: const Icon(Icons.send, color: Colors.white, size: 48),
+                      onPressed: () => _sendCameraImage(CameraTriggerType.manual),
+                      tooltip: '手动发送图像',
+                    ),
+                  ),
+                // 非全屏浮动窗口模式下的简单控制按钮
+                if (!isFullscreen)
+                  Positioned(
+                    top: 4,
+                    right: 4,
+                    child: Row(
+                      children: [
+                        if (manager.cameras.length > 1)
+                          IconButton(
+                            icon: const Icon(Icons.flip_camera_android, color: Colors.white, size: 18),
+                            onPressed: _switchCamera,
+                            tooltip: '切换摄像头',
+                          ),
+                        IconButton(
+                          icon: const Icon(Icons.maximize, color: Colors.white, size: 18),
+                          onPressed: _toggleFullscreen,
+                          tooltip: '全屏',
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          );
+        },
       ),
     );
   }
@@ -716,24 +812,6 @@ class ChatMessage {
     this.isImage = false,
     this.isImageReply = false,
   });
-}
-
-class CameraPreviewWidget extends StatelessWidget {
-  const CameraPreviewWidget({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    final cameraService = locator<CameraService>();
-    return ValueListenableBuilder<CameraController?>(
-      valueListenable: cameraService.controllerNotifier,
-      builder: (context, controller, child) {
-        if (controller == null || !controller.value.isInitialized) {
-          return const SizedBox();
-        }
-        return CameraPreview(controller);
-      },
-    );
-  }
 }
 
 enum CameraTriggerType {

@@ -2,20 +2,47 @@ import 'dart:async';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:camera/camera.dart';
+import 'package:provider/provider.dart';
 import 'chat_screen.dart';
+import 'camera_manager.dart';
+import 'services/tts/tts_service.dart';
+import 'services/tts/tts_factory.dart';
 import 'utils/logger.dart';
 
 void main() async {
-  await dotenv.load();
+  WidgetsFlutterBinding.ensureInitialized();
   
-  runZonedGuarded<Future<void>>(
+  await runZonedGuarded<Future<void>>(
     () async {
-      WidgetsFlutterBinding.ensureInitialized();
-      runApp(const MyApp());
+      await dotenv.load();
+      
+      await Future.delayed(const Duration(milliseconds: 100));
+      
+      final cameras = await availableCameras();
+      
+      runApp(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider(
+              create: (_) {
+                final manager = CameraManager();
+                manager.initialize(cameras);
+                return manager;
+              },
+            ),
+            Provider<TtsService>(
+              create: (_) => createTtsService(),
+              dispose: (_, service) => service.dispose(),
+            ),
+          ],
+          child: const MyApp(),
+        ),
+      );
     },
     (error, stackTrace) {
-      debugPrint('全局未处理异常: $error');
-      debugPrint('堆栈跟踪: $stackTrace');
+      Logger.e('Main', '全局未处理异常: $error', error);
+      Logger.e('Main', '堆栈跟踪: $stackTrace', error);
     },
   );
 }
@@ -33,7 +60,7 @@ class MyApp extends StatelessWidget {
       home: const ChatScreen(),
       navigatorKey: _navigatorKey,
       builder: (context, child) {
-        return ErrorHandler(child: child!, navigatorKey: _navigatorKey);
+        return ErrorHandler(navigatorKey: _navigatorKey, child: child!);
       },
     );
   }
@@ -51,7 +78,6 @@ class ErrorHandler extends StatefulWidget {
 
 class _ErrorHandlerState extends State<ErrorHandler> {
   Object? _error;
-  StackTrace? _stackTrace;
 
   @override
   void initState() {
@@ -63,7 +89,6 @@ class _ErrorHandlerState extends State<ErrorHandler> {
   void _handleFlutterError(FlutterErrorDetails details) {
     setState(() {
       _error = details.exception;
-      _stackTrace = details.stack;
     });
     Logger.e('ErrorHandler', 'Flutter错误: ${details.exception}', details.exception);
     _showErrorDialog(details.exception.toString());
@@ -72,7 +97,6 @@ class _ErrorHandlerState extends State<ErrorHandler> {
   bool _handlePlatformError(Object error, StackTrace stackTrace) {
     setState(() {
       _error = error;
-      _stackTrace = stackTrace;
     });
     Logger.e('ErrorHandler', '平台错误: $error', error);
     _showErrorDialog(error.toString());
@@ -80,29 +104,38 @@ class _ErrorHandlerState extends State<ErrorHandler> {
   }
 
   void _showErrorDialog(String message) {
+    if (!mounted) return;
+    
     final context = widget.navigatorKey.currentContext;
     if (context != null) {
-      showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('发生错误'),
-          content: SingleChildScrollView(
-            child: Text(message),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                setState(() {
-                  _error = null;
-                  _stackTrace = null;
-                });
-                Navigator.pop(context);
-              },
-              child: const Text('确定'),
-            ),
-          ],
-        ),
-      );
+      try {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            showDialog(
+              context: context,
+              builder: (context) => AlertDialog(
+                title: const Text('发生错误'),
+                content: SingleChildScrollView(
+                  child: Text(message),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () {
+                      setState(() {
+                        _error = null;
+                      });
+                      Navigator.pop(context);
+                    },
+                    child: const Text('确定'),
+                  ),
+                ],
+              ),
+            );
+          }
+        });
+      } catch (e) {
+        Logger.e('ErrorHandler', '显示错误对话框失败: $e', e);
+      }
     }
   }
 
@@ -135,7 +168,6 @@ class _ErrorHandlerState extends State<ErrorHandler> {
                 onPressed: () {
                   setState(() {
                     _error = null;
-                    _stackTrace = null;
                   });
                 },
                 child: const Text('重试'),

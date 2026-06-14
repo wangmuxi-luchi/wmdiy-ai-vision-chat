@@ -35,6 +35,13 @@ class MockSpeechRecognitionService implements SpeechRecognitionService {
   void dispose() {
     _controller?.close();
   }
+
+  @override
+  void setCredentials({
+    required String secretId,
+    required String secretKey,
+    required int appId,
+  }) {}
 }
 
 class MockTextProcessorService implements TextProcessorService {
@@ -140,6 +147,9 @@ class MockCameraServiceImpl implements CameraService {
   bool get isSwitching => _isSwitching;
   
   @override
+  double get aspectRatio => 4.0 / 3.0;
+  
+  @override
   CameraController? get controller => null;
   
   @override
@@ -186,6 +196,11 @@ class MockCameraServiceImpl implements CameraService {
   @override
   Future<Uint8List?> captureImage() async {
     return Uint8List.fromList([0x89, 0x50, 0x4E, 0x47]);
+  }
+  
+  @override
+  void restartPreview() {
+    // Mock implementation
   }
   
   @override

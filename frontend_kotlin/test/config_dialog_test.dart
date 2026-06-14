@@ -17,6 +17,13 @@ class MockSpeechRecognitionService implements SpeechRecognitionService {
 
   @override
   void dispose() {}
+
+  @override
+  void setCredentials({
+    required String secretId,
+    required String secretKey,
+    required int appId,
+  }) {}
 }
 
 class MockCommunicationService implements CommunicationService {
