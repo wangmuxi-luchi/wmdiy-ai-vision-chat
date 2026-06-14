@@ -1,0 +1,1 @@
+Future<bool> hasNetworkConnectivity() async => true;

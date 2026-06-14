@@ -4,6 +4,14 @@
 
 require('dotenv').config();
 
+// ── 过滤第三方库的调试日志 ──
+const _origConsoleLog = console.log;
+console.log = function(...args) {
+  const msg = String(args[0] || '');
+  if (msg === 'proxy' || msg === 'STEP_API') return;
+  _origConsoleLog.apply(console, args);
+};
+
 // ── 全局异常处理 ──
 process.on('uncaughtException', (err) => {
   console.error('[ERROR] 未捕获的异常:', err.message);
@@ -34,7 +42,7 @@ const isValidApiKey = STEPFUN_API_KEY &&
   STEPFUN_API_KEY !== 'your_api_key' && 
   STEPFUN_API_KEY !== 'your_api_key_here' && 
   STEPFUN_API_KEY.length > 10 &&
-  /^sk-[a-zA-Z0-9]+$/.test(STEPFUN_API_KEY); // 验证格式
+  /^[a-zA-Z0-9]+$/.test(STEPFUN_API_KEY); // 验证格式（兼容阶跃星辰 Key）
 
 const API_OK = isValidApiKey;
 

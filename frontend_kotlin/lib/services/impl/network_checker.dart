@@ -1,0 +1,1 @@
+export 'network_checker_stub.dart' if (dart.library.io) 'network_checker_io.dart';

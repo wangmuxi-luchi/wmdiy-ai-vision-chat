@@ -71,8 +71,15 @@ class ASRSpeechRecognitionService implements SpeechRecognitionService {
       Logger.d('ASR', 'startListening - 当前配置: appId=${_config.appID}, secretId=${_config.secretID.isNotEmpty ? '已设置' : '空'}, secretKey=${_config.secretKey.isNotEmpty ? '已设置' : '空'}, engine=${_config.engine_model_type}');
       
       if (_isListening) {
-        Logger.w('ASR', 'startListening - 正在监听中，忽略重复调用');
-        return;
+        Logger.w('ASR', 'startListening - 正在监听中，强制停止旧会话');
+        try {
+          await _controller?.stop().timeout(const Duration(seconds: 3));
+        } catch (_) {}
+        try {
+          await _controller?.release();
+        } catch (_) {}
+        _controller = null;
+        _isListening = false;
       }
       
       if (_controller != null) {

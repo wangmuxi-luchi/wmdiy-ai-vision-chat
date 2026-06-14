@@ -15,6 +15,7 @@ import 'widgets/draggable_camera_preview.dart';
 import 'utils/logger.dart';
 import 'package:provider/provider.dart';
 import 'camera_manager.dart';
+import 'services/tts/tts_service.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -32,11 +33,14 @@ class _ChatScreenState extends State<ChatScreen> {
   late ConfigService _configService;
   StreamSubscription<Command>? _commandSubscription;
   StreamSubscription<String>? _messageSubscription;
+  StreamSubscription<ASRResult>? _asrSubscription;
   
   bool _isMicOn = false;
   bool _isSidebarOpen = false;
   bool _isAutoSendSpeech = false; // 语音转文字自动发送开关
+  bool _isTtsEnabled = false; // 文字转语音朗读开关
   bool _isStoppingRecording = false; // 是否正在停止录音（用于防止关闭麦克风时接收缓存结果）
+  bool _isTtsSpeaking = false; // 是否正在进行TTS朗读（防止朗读期间误开麦克风）
 
   String _pendingSpeechText = '';
   String _confirmedSpeechText = ''; // 已确认的文本（一句话结束后累加）
@@ -123,12 +127,41 @@ class _ChatScreenState extends State<ChatScreen> {
   }
   
   void _subscribeToMessages() {
-    _messageSubscription = _communicationService.messageStream.listen((message) {
+    _messageSubscription = _communicationService.messageStream.listen((message) async {
+      Logger.d('ChatScreen', '[TTS 检查] 收到消息: "${message.length > 50 ? '${message.substring(0, 50)}...' : message}"');
+      Logger.d('ChatScreen', '[TTS 检查] _isTtsEnabled = $_isTtsEnabled');
       if (mounted) {
         setState(() {
           _messages.add(ChatMessage(text: message, isUser: false));
         });
         _scrollToBottom();
+
+        if (_isTtsEnabled) {
+          try {
+            final tts = context.read<TtsService>();
+
+            final bool wasMicOn = _isMicOn;
+            if (wasMicOn) {
+              Logger.d('ChatScreen', '[TTS] TTS朗读前自动关闭麦克风');
+              _toggleMic();
+            }
+
+            _isTtsSpeaking = true;
+            Logger.d('ChatScreen', '[TTS] 开始朗读...');
+            await tts.speak(message);
+            _isTtsSpeaking = false;
+
+            if (wasMicOn && _isTtsEnabled && mounted) {
+              Logger.d('ChatScreen', '[TTS] 朗读完成，自动恢复麦克风');
+              _toggleMic();
+            }
+          } catch (e) {
+            _isTtsSpeaking = false;
+            Logger.e('ChatScreen', 'TTS 播放失败: $e', e);
+          }
+        } else {
+          Logger.d('ChatScreen', '[TTS] 未开启朗读，跳过');
+        }
       }
     });
   }
@@ -214,16 +247,21 @@ class _ChatScreenState extends State<ChatScreen> {
     _communicationService.dispose();
     _commandSubscription?.cancel();
     _messageSubscription?.cancel();
+    _asrSubscription?.cancel();
     super.dispose();
   }
 
-  void _toggleMic() {
+  Future<void> _toggleMic() async {
+    if (_isTtsSpeaking) {
+      Logger.d('ChatScreen', '[TTS] 朗读中，禁止打开麦克风');
+      return;
+    }
     Logger.d('ChatScreen', '切换麦克风状态: 当前=$_isMicOn');
     setState(() => _isMicOn = !_isMicOn);
     if (_isMicOn) {
       _startRecording();
     } else {
-      _stopRecording();
+      await _stopRecording();
     }
   }
 
@@ -234,7 +272,8 @@ class _ChatScreenState extends State<ChatScreen> {
       Stream<ASRResult> asrStream = _speechService.startListening();
       Logger.d('ChatScreen', 'startListening() 返回成功，开始监听Stream');
       
-      asrStream.listen(
+      await _asrSubscription?.cancel();
+      _asrSubscription = asrStream.listen(
         (result) {
           // 如果正在停止录音，忽略收到的数据（可能是SDK缓存的旧数据）
           if (!mounted || _isStoppingRecording) {
@@ -300,6 +339,8 @@ class _ChatScreenState extends State<ChatScreen> {
       _isStoppingRecording = true;
     });
     try {
+      await _asrSubscription?.cancel();
+      _asrSubscription = null;
       await _speechService.stopListening();
     } catch (e) {
       Logger.e('ChatScreen', 'Error stopping recording: $e');
@@ -312,6 +353,20 @@ class _ChatScreenState extends State<ChatScreen> {
   void _toggleCamera() {
     final manager = context.read<CameraManager>();
     manager.toggleCameraOn();
+  }
+
+  void _toggleTts() {
+    setState(() {
+      _isTtsEnabled = !_isTtsEnabled;
+    });
+    Logger.i('ChatScreen', '[TTS] 朗读开关: $_isTtsEnabled');
+    if (!_isTtsEnabled) {
+      _isTtsSpeaking = false;
+      try {
+        final tts = context.read<TtsService>();
+        tts.stop();
+      } catch (_) {}
+    }
   }
   
   Future<void> _switchCamera() async {
@@ -402,6 +457,12 @@ class _ChatScreenState extends State<ChatScreen> {
             icon: Icon(manager.isCameraOn ? Icons.videocam : Icons.videocam_off),
             onPressed: _toggleCamera,
           ),
+          IconButton(
+            icon: Icon(_isTtsEnabled ? Icons.volume_up : Icons.volume_off),
+            color: _isTtsEnabled ? Colors.blue : null,
+            onPressed: _toggleTts,
+            tooltip: _isTtsEnabled ? '关闭朗读' : '开启朗读',
+          ),
         ],
       ),
       body: Stack(
@@ -453,9 +514,11 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
         // 浮动的可拖动摄像头预览窗口
-        if (controllerExists)
+        if (controllerExists && manager.isCameraOn)
           DraggableCameraPreview(
             controller: manager.controller!,
+            initialWidth: 150,
+            initialHeight: 200,
             onToggleFullscreen: _toggleFullscreen,
             onCapture: () => _sendCameraImage(CameraTriggerType.manual),
             onSwitchCamera: _switchCamera,
@@ -522,6 +585,11 @@ class _ChatScreenState extends State<ChatScreen> {
                             icon: const Icon(Icons.flip_camera_android, color: Colors.white, size: 32),
                             onPressed: _switchCamera,
                           ),
+                        IconButton(
+                          icon: Icon(_isTtsEnabled ? Icons.volume_up : Icons.volume_off, color: Colors.white, size: 32),
+                          onPressed: _toggleTts,
+                          tooltip: _isTtsEnabled ? '关闭朗读' : '开启朗读',
+                        ),
                       ],
                     ),
                   ),
@@ -545,7 +613,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     bottom: 20,
                     right: 20,
                     child: IconButton(
-                      icon: const Icon(Icons.camera, color: Colors.white, size: 48),
+                      icon: const Icon(Icons.send, color: Colors.white, size: 48),
                       onPressed: () => _sendCameraImage(CameraTriggerType.manual),
                       tooltip: '手动发送图像',
                     ),

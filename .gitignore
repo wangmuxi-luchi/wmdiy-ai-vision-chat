@@ -59,3 +59,4 @@ frontend_kotlin/web/third_party/tencentcloud-speech-sdk-js-main/asr/examples/con
 
 frontend/
 frontend_test/my_camera_app/
+frontend_test/tts_demo/

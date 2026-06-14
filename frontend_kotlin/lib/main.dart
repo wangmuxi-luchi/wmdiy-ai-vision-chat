@@ -6,6 +6,8 @@ import 'package:camera/camera.dart';
 import 'package:provider/provider.dart';
 import 'chat_screen.dart';
 import 'camera_manager.dart';
+import 'services/tts/tts_service.dart';
+import 'services/tts/tts_factory.dart';
 import 'utils/logger.dart';
 
 void main() async {
@@ -20,12 +22,20 @@ void main() async {
       final cameras = await availableCameras();
       
       runApp(
-        ChangeNotifierProvider(
-          create: (_) {
-            final manager = CameraManager();
-            manager.initialize(cameras);
-            return manager;
-          },
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider(
+              create: (_) {
+                final manager = CameraManager();
+                manager.initialize(cameras);
+                return manager;
+              },
+            ),
+            Provider<TtsService>(
+              create: (_) => createTtsService(),
+              dispose: (_, service) => service.dispose(),
+            ),
+          ],
           child: const MyApp(),
         ),
       );

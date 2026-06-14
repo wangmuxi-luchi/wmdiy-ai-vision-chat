@@ -63,6 +63,9 @@ dependencies:
   # 日志库
   logger: ^1.1.0
   
+  # 文字转语音（跨平台：Android/iOS/Web）
+  flutter_tts: ^4.2.5
+  
 
 dev_dependencies:
   flutter_test:

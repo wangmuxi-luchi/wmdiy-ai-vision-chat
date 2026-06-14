@@ -137,7 +137,7 @@ class _DraggableCameraPreviewState extends State<DraggableCameraPreview> {
     final RenderBox renderBox = context.findRenderObject() as RenderBox;
     final Offset localPosition = renderBox.globalToLocal(details.globalPosition);
     
-    const double resizeArea = 40;
+    const double resizeArea = 80;
     final bool nearRightEdge = (localPosition.dx - _width).abs() < resizeArea;
     final bool nearBottomEdge = (localPosition.dy - _height).abs() < resizeArea;
     
