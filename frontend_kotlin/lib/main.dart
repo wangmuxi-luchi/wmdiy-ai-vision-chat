@@ -2,20 +2,33 @@ import 'dart:async';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:camera/camera.dart';
+import 'package:provider/provider.dart';
 import 'chat_screen.dart';
+import 'camera_manager.dart';
 import 'utils/logger.dart';
 
 void main() async {
-  // 先确保绑定初始化
   WidgetsFlutterBinding.ensureInitialized();
   
-  // 然后加载环境变量
-  await dotenv.load();
-  
-  // 在同一个 zone 中运行应用
-  runZonedGuarded<Future<void>>(
+  await runZonedGuarded<Future<void>>(
     () async {
-      runApp(const MyApp());
+      await dotenv.load();
+      
+      await Future.delayed(const Duration(milliseconds: 100));
+      
+      final cameras = await availableCameras();
+      
+      runApp(
+        ChangeNotifierProvider(
+          create: (_) {
+            final manager = CameraManager();
+            manager.initialize(cameras);
+            return manager;
+          },
+          child: const MyApp(),
+        ),
+      );
     },
     (error, stackTrace) {
       Logger.e('Main', '全局未处理异常: $error', error);
@@ -81,28 +94,38 @@ class _ErrorHandlerState extends State<ErrorHandler> {
   }
 
   void _showErrorDialog(String message) {
+    if (!mounted) return;
+    
     final context = widget.navigatorKey.currentContext;
     if (context != null) {
-      showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('发生错误'),
-          content: SingleChildScrollView(
-            child: Text(message),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                setState(() {
-                  _error = null;
-                });
-                Navigator.pop(context);
-              },
-              child: const Text('确定'),
-            ),
-          ],
-        ),
-      );
+      try {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            showDialog(
+              context: context,
+              builder: (context) => AlertDialog(
+                title: const Text('发生错误'),
+                content: SingleChildScrollView(
+                  child: Text(message),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () {
+                      setState(() {
+                        _error = null;
+                      });
+                      Navigator.pop(context);
+                    },
+                    child: const Text('确定'),
+                  ),
+                ],
+              ),
+            );
+          }
+        });
+      } catch (e) {
+        Logger.e('ErrorHandler', '显示错误对话框失败: $e', e);
+      }
     }
   }
 

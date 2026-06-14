@@ -4,6 +4,18 @@
 
 require('dotenv').config();
 
+// ── 全局异常处理 ──
+process.on('uncaughtException', (err) => {
+  console.error('[ERROR] 未捕获的异常:', err.message);
+  console.error(err.stack);
+  // 不退出进程，保持服务运行
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[ERROR] 未处理的 Promise 拒绝:', reason?.message || reason);
+  // 不退出进程，保持服务运行
+});
+
 const express = require('express');
 const http = require('http');
 const { WebSocketServer } = require('ws');
@@ -16,7 +28,15 @@ const { getRealtimeSession, removeRealtimeSession, extractPCMFromWAV } = require
 const PORT = parseInt(process.env.PORT || '8000', 10);
 const STEPFUN_API_KEY = process.env.STEPFUN_API_KEY || '';
 const STEPFUN_BASE_URL = process.env.STEPFUN_BASE_URL || 'https://api.stepfun.com/v1';
-const API_OK = !!(STEPFUN_API_KEY && STEPFUN_API_KEY !== 'your_api_key_here' && STEPFUN_API_KEY.length > 10);
+
+// 验证 API Key 是否有效
+const isValidApiKey = STEPFUN_API_KEY && 
+  STEPFUN_API_KEY !== 'your_api_key' && 
+  STEPFUN_API_KEY !== 'your_api_key_here' && 
+  STEPFUN_API_KEY.length > 10 &&
+  /^sk-[a-zA-Z0-9]+$/.test(STEPFUN_API_KEY); // 验证格式
+
+const API_OK = isValidApiKey;
 
 let openaiClient = null;
 if (API_OK) {
@@ -56,7 +76,11 @@ wss.on('connection', (ws) => {
   if (API_OK) {
     getRealtimeSession(sid, STEPFUN_API_KEY)
       .then(m => { rtMgr = m; console.log(`[Realtime] 就绪: ${sid}`); })
-      .catch(e => console.error(`[Realtime] 失败: ${sid}`, e.message));
+      .catch(e => { 
+        console.error(`[Realtime] 连接失败: ${sid}`, e.message); 
+        console.warn(`[Realtime] 实时语音功能不可用，将进入演示模式`);
+        rtMgr = null;
+      });
   }
 
   ws.on('message', async (raw) => {

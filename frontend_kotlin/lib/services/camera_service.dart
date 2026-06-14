@@ -31,5 +31,8 @@ abstract class CameraService {
   
   ValueNotifier<CameraController?> get controllerNotifier;
   
+  /// 获取相机预览的宽高比
+  double get aspectRatio;
+  
   void dispose();
 }

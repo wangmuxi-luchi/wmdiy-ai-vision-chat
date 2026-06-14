@@ -47,6 +47,8 @@ dependencies:
   
   # 摄像头支持
   camera: ^0.10.5+5
+
+  provider: ^6.0.5
   
   # 图像选择器（用于从相册选择图片）
   image_picker: ^1.0.4

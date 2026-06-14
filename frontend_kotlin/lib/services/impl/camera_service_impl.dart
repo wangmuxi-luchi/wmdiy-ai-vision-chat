@@ -33,6 +33,22 @@ class CameraServiceImpl implements CameraService {
   ValueNotifier<CameraController?> get controllerNotifier => _controllerNotifier;
   
   @override
+  double get aspectRatio {
+    if (_controller == null || !_controller!.value.isInitialized) {
+      Logger.d('Camera', 'aspectRatio: 使用默认值 4:3');
+      return 4.0 / 3.0;
+    }
+    final size = _controller!.value.previewSize;
+    if (size != null) {
+      final ratio = size.width / size.height;
+      Logger.d('Camera', 'aspectRatio: ${size.width}x${size.height} = $ratio');
+      return ratio;
+    }
+    Logger.d('Camera', 'aspectRatio: previewSize 为 null，使用默认值 4:3');
+    return 4.0 / 3.0;
+  }
+  
+  @override
   Future<bool> initialize([CameraLensDirection direction = CameraLensDirection.back]) async {
     try {
       Logger.d('Camera', '正在初始化摄像头，方向: $direction');
@@ -163,6 +179,15 @@ class CameraServiceImpl implements CameraService {
     } catch (e) {
       Logger.e('Camera', '捕获失败: $e');
       return null;
+    }
+  }
+  
+  @override
+  void restartPreview() {
+    Logger.d('Camera', '重启预览');
+    if (_controller != null && _isPreviewingInternal) {
+      stopPreview();
+      startPreview();
     }
   }
   

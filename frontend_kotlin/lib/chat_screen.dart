@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:js' as js;
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'services/locator.dart';
@@ -9,12 +9,12 @@ import 'services/message_receiver_service.dart';
 import 'services/impl/message_receiver_service_impl.dart';
 import 'services/command_receiver_service.dart';
 import 'services/camera_image_service.dart';
-import 'services/camera_service.dart';
 import 'services/communication_service.dart';
 import 'widgets/sidebar.dart';
-import 'widgets/camera_preview_widget.dart';
 import 'widgets/draggable_camera_preview.dart';
 import 'utils/logger.dart';
+import 'package:provider/provider.dart';
+import 'camera_manager.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -28,20 +28,15 @@ class _ChatScreenState extends State<ChatScreen> {
   late MessageReceiverService _messageReceiverService;
   late CommandReceiverService _commandReceiverService;
   late CameraImageService _cameraImageService;
-  late CameraService _cameraService;
   late CommunicationService _communicationService;
   late ConfigService _configService;
   StreamSubscription<Command>? _commandSubscription;
   StreamSubscription<String>? _messageSubscription;
   
   bool _isMicOn = false;
-  bool _isCameraOn = true;
-  bool _isFullscreen = false;
-  bool _isCameraInitialized = false;
   bool _isSidebarOpen = false;
   bool _isAutoSendSpeech = false; // 语音转文字自动发送开关
   bool _isStoppingRecording = false; // 是否正在停止录音（用于防止关闭麦克风时接收缓存结果）
-  int _cameraPreviewKey = 0;
 
   String _pendingSpeechText = '';
   String _confirmedSpeechText = ''; // 已确认的文本（一句话结束后累加）
@@ -65,7 +60,6 @@ class _ChatScreenState extends State<ChatScreen> {
       _messageReceiverService = locator<MessageReceiverService>();
       _commandReceiverService = locator<CommandReceiverService>();
       _cameraImageService = locator<CameraImageService>();
-      _cameraService = locator<CameraService>();
       _communicationService = locator<CommunicationService>();
       _configService = locator<ConfigService>();
       await _configService.init();
@@ -75,7 +69,6 @@ class _ChatScreenState extends State<ChatScreen> {
       
       _subscribeToCommands();
       _subscribeToMessages();
-      await _initializeCamera();
       await _connectToServer();
     } catch (e, stackTrace) {
       Logger.e('ChatScreen', '初始化异常: $e\n$stackTrace', e);
@@ -139,16 +132,6 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     });
   }
-  
-  Future<void> _initializeCamera() async {
-    bool success = await _cameraService.initialize();
-    setState(() {
-      _isCameraInitialized = success;
-    });
-    if (success && _isCameraOn) {
-      await _cameraService.startPreview();
-    }
-  }
 
   void _subscribeToCommands() {
     _commandSubscription = _commandReceiverService.commandStream.listen((command) {
@@ -183,32 +166,39 @@ class _ChatScreenState extends State<ChatScreen> {
       ));
     });
     
-    _cameraService.captureImage().then((imageData) async {
-      if (imageData != null) {
-        if (_communicationService.isConnected) {
-          try {
-            await _communicationService.sendImage(imageData);
-            setState(() {
-              _cameraLogs.last.status = '发送成功';
-            });
-          } catch (e) {
-            setState(() {
-              _cameraLogs.last.status = '发送失败: $e';
-            });
-          }
-        } else {
-          _cameraImageService.analyzeImage('camera_frame_data').then((analysisResult) {
-            Logger.d('ChatScreen', '图像分析结果: $analysisResult');
-            setState(() {
-              _cameraLogs.last.status = '离线分析完成（未发送）';
-            });
+    final manager = context.read<CameraManager>();
+    if (manager.controller == null) {
+      setState(() {
+        _cameraLogs.last.status = '捕获失败: 摄像头未初始化';
+      });
+      return;
+    }
+    
+    manager.controller!.takePicture().then((XFile file) async {
+      final imageData = await file.readAsBytes();
+      if (_communicationService.isConnected) {
+        try {
+          await _communicationService.sendImage(imageData);
+          setState(() {
+            _cameraLogs.last.status = '发送成功';
+          });
+        } catch (e) {
+          setState(() {
+            _cameraLogs.last.status = '发送失败: $e';
           });
         }
       } else {
-        setState(() {
-          _cameraLogs.last.status = '捕获失败';
+        _cameraImageService.analyzeImage('camera_frame_data').then((analysisResult) {
+          Logger.d('ChatScreen', '图像分析结果: $analysisResult');
+          setState(() {
+            _cameraLogs.last.status = '离线分析完成（未发送）';
+          });
         });
       }
+    }).catchError((e) {
+      setState(() {
+        _cameraLogs.last.status = '捕获失败: $e';
+      });
     });
   }
 
@@ -221,7 +211,6 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_messageReceiverService is MessageReceiverServiceImpl) {
       (_messageReceiverService as MessageReceiverServiceImpl).dispose();
     }
-    _cameraService.dispose();
     _communicationService.dispose();
     _commandSubscription?.cancel();
     _messageSubscription?.cancel();
@@ -321,73 +310,20 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _toggleCamera() {
-    setState(() => _isCameraOn = !_isCameraOn);
-    if (_isCameraInitialized) {
-      if (_isCameraOn) {
-        _cameraService.startPreview();
-      } else {
-        _cameraService.stopPreview();
-      }
-    }
+    final manager = context.read<CameraManager>();
+    manager.toggleCameraOn();
   }
   
   Future<void> _switchCamera() async {
-    if (_cameraService.isSwitching) {
-      return;
-    }
-    
-    setState(() {
-      _isCameraInitialized = false;
-    });
-    
-    bool success = await _cameraService.switchCamera();
-    
-    if (success && mounted) {
-      setState(() {
-        _isCameraInitialized = true;
-      });
-    }
+    final manager = context.read<CameraManager>();
+    await manager.toggleCamera();
   }
   
   void _toggleFullscreen() {
-    Logger.d('ChatScreen', '_toggleFullscreen() - 之前: _isFullscreen=$_isFullscreen, _cameraPreviewKey=$_cameraPreviewKey');
-    
-    // 输出切换前的 video 状态
-    _logVideoElementStatus('切换全屏前');
-    
-    setState(() {
-      _isFullscreen = !_isFullscreen;
-      _cameraPreviewKey++;
-    });
-    
-    Logger.d('ChatScreen', '_toggleFullscreen() - 之后: _isFullscreen=$_isFullscreen, _cameraPreviewKey=$_cameraPreviewKey');
-    
-    // 延迟调用 restartPreview 确保 Widget 重建完成后再重启预览
-    // 这是为了解决 Flutter Web 全屏切换时 CameraPreview 失效的问题
-    Future.delayed(const Duration(milliseconds: 100), () {
-      // 输出切换中的 video 状态
-      _logVideoElementStatus('切换全屏中(100ms)');
-    });
-    
-    Future.delayed(const Duration(milliseconds: 300), () {
-      Logger.d('ChatScreen', '全屏切换后调用 restartPreview');
-      // 输出切换后的 video 状态
-      _logVideoElementStatus('切换全屏后(300ms)');
-      _cameraService.restartPreview();
-    });
-    
-    Future.delayed(const Duration(milliseconds: 500), () {
-      // 输出 restartPreview 后的 video 状态
-      _logVideoElementStatus('restartPreview 后(500ms)');
-    });
-  }
-  
-  void _logVideoElementStatus(String context) {
-    try {
-      js.context.callMethod('logVideoElementStatus', [context]);
-    } catch (e) {
-      Logger.d('ChatScreen', '_logVideoElementStatus 失败: $e');
-    }
+    final manager = context.read<CameraManager>();
+    Logger.d('ChatScreen', '_toggleFullscreen() - 调用前: isFullscreen=${manager.isFullscreen}, controller=${manager.controller != null ? '存在' : 'null'}');
+    manager.toggleFullscreen();
+    Logger.d('ChatScreen', '_toggleFullscreen() - 调用后: isFullscreen=${manager.isFullscreen}');
   }
 
   void _sendUserMessage(String text) {
@@ -447,8 +383,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final manager = context.watch<CameraManager>();
+    
     return Scaffold(
-      appBar: _isFullscreen ? null : AppBar(
+      appBar: manager.isFullscreen ? null : AppBar(
         title: const Text('语音视频聊天助手'),
         leading: IconButton(
           icon: const Icon(Icons.menu),
@@ -461,14 +399,14 @@ class _ChatScreenState extends State<ChatScreen> {
             onPressed: _toggleMic,
           ),
           IconButton(
-            icon: Icon(_isCameraOn ? Icons.videocam : Icons.videocam_off),
+            icon: Icon(manager.isCameraOn ? Icons.videocam : Icons.videocam_off),
             onPressed: _toggleCamera,
           ),
         ],
       ),
       body: Stack(
         children: [
-          _isFullscreen ? _buildCameraPreview(isFullscreen: true) : _buildNormalLayout(),
+          manager.isFullscreen ? _buildCameraPreview(isFullscreen: true) : _buildNormalLayout(context),
           if (_isSidebarOpen)
             Stack(
               children: [
@@ -491,7 +429,20 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Widget _buildNormalLayout() {
+  Widget _buildNormalLayout(BuildContext context) {
+    final manager = context.watch<CameraManager>();
+    final controllerExists = manager.controller != null;
+    
+    Logger.d('ChatScreen', '_buildNormalLayout() - 开始构建');
+    Logger.d('ChatScreen', '_buildNormalLayout() - controller=${controllerExists ? '存在' : 'null'}');
+    Logger.d('ChatScreen', '_buildNormalLayout() - isFullscreen=${manager.isFullscreen}');
+    Logger.d('ChatScreen', '_buildNormalLayout() - isCameraOn=${manager.isCameraOn}');
+    
+    if (controllerExists) {
+      Logger.d('ChatScreen', '_buildNormalLayout() - controller状态: isInitialized=${manager.controller!.value.isInitialized}, isStreamingImages=${manager.controller!.value.isStreamingImages}');
+      Logger.d('ChatScreen', '_buildNormalLayout() - 将${manager.isCameraOn ? '显示' : '隐藏'}浮动摄像头预览窗口');
+    }
+    
     return Stack(
       children: [
         Column(
@@ -502,104 +453,128 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
         // 浮动的可拖动摄像头预览窗口
-        if (_isCameraInitialized && _isCameraOn)
+        if (controllerExists)
           DraggableCameraPreview(
-            child: _buildCameraPreview(isFullscreen: false),
-            onTap: _toggleFullscreen,
+            controller: manager.controller!,
+            onToggleFullscreen: _toggleFullscreen,
+            onCapture: () => _sendCameraImage(CameraTriggerType.manual),
+            onSwitchCamera: _switchCamera,
+            hasMultipleCameras: manager.cameras.length > 1,
           ),
       ],
     );
   }
 
   Widget _buildCameraPreview({required bool isFullscreen}) {
-    Logger.d('ChatScreen', '_buildCameraPreview() - isFullscreen=$isFullscreen, _isCameraInitialized=$_isCameraInitialized, _isCameraOn=$_isCameraOn, _cameraPreviewKey=$_cameraPreviewKey');
+    final manager = context.watch<CameraManager>();
+    final controllerExists = manager.controller != null;
+    final isPreviewEnabled = manager.isCameraOn;
+    final willShowCameraPreview = controllerExists && isPreviewEnabled;
+    
+    Logger.d('ChatScreen', '_buildCameraPreview() - 开始构建');
+    Logger.d('ChatScreen', '_buildCameraPreview() - isFullscreen=$isFullscreen');
+    Logger.d('ChatScreen', '_buildCameraPreview() - controller=${controllerExists ? '存在' : 'null'}');
+    Logger.d('ChatScreen', '_buildCameraPreview() - isCameraOn=$isPreviewEnabled');
+    Logger.d('ChatScreen', '_buildCameraPreview() - 将${willShowCameraPreview ? '显示 CameraPreview' : '显示占位图标'}');
+    
+    if (controllerExists) {
+      Logger.d('ChatScreen', '_buildCameraPreview() - controller状态: isInitialized=${manager.controller!.value.isInitialized}, isStreamingImages=${manager.controller!.value.isStreamingImages}');
+    }
     
     return RepaintBoundary(
-      child: Container(
-        color: Colors.black,
-        child: Stack(
-          children: [
-            if (_isCameraInitialized && _isCameraOn)
-              Center(
-                child: CameraPreviewWidget(key: ValueKey(_cameraPreviewKey)),
-              )
-            else
-              Center(
-                child: _isCameraOn
-                    ? const Icon(Icons.videocam, size: 48, color: Colors.white70)
-                    : const Icon(Icons.videocam_off, size: 48, color: Colors.white70),
-              ),
-            // 全屏模式下的控制按钮
-            if (isFullscreen)
-              Positioned(
-                top: 40,
-                left: 16,
-                child: Row(
-                  children: [
-                    IconButton(
-                      icon: Icon(_isMicOn ? Icons.mic : Icons.mic_off, color: _isMicOn ? Colors.red : Colors.white, size: 32),
-                      onPressed: _toggleMic,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          Logger.d('ChatScreen', '_buildCameraPreview() - LayoutBuilder constraints: ${constraints.maxWidth}x${constraints.maxHeight}');
+          
+          return Container(
+            color: Colors.black,
+            width: constraints.maxWidth,
+            height: constraints.maxHeight,
+            child: Stack(
+              children: [
+                if (willShowCameraPreview)
+                  Center(
+                    child: CameraPreview(manager.controller!),
+                  )
+                else
+                  Center(
+                    child: isPreviewEnabled
+                        ? const Icon(Icons.videocam, size: 48, color: Colors.white70)
+                        : const Icon(Icons.videocam_off, size: 48, color: Colors.white70),
+                  ),
+                // 全屏模式下的控制按钮
+                if (isFullscreen)
+                  Positioned(
+                    top: 40,
+                    left: 16,
+                    child: Row(
+                      children: [
+                        IconButton(
+                          icon: Icon(_isMicOn ? Icons.mic : Icons.mic_off, color: _isMicOn ? Colors.red : Colors.white, size: 32),
+                          onPressed: _toggleMic,
+                        ),
+                        IconButton(
+                          icon: Icon(manager.isCameraOn ? Icons.videocam : Icons.videocam_off, color: Colors.white, size: 32),
+                          onPressed: _toggleCamera,
+                        ),
+                        if (manager.cameras.length > 1)
+                          IconButton(
+                            icon: const Icon(Icons.flip_camera_android, color: Colors.white, size: 32),
+                            onPressed: _switchCamera,
+                          ),
+                      ],
                     ),
-                    IconButton(
-                      icon: Icon(_isCameraOn ? Icons.videocam : Icons.videocam_off, color: Colors.white, size: 32),
-                      onPressed: _toggleCamera,
-                    ),
-                    if (_cameraService.hasMultipleCameras)
-                      IconButton(
-                        icon: const Icon(Icons.flip_camera_android, color: Colors.white, size: 32),
-                        onPressed: _switchCamera,
-                      ),
-                  ],
-                ),
-              ),
-            if (isFullscreen)
-              Positioned(
-                top: 40,
-                right: 16,
-                child: IconButton(
-                  icon: const Icon(Icons.fullscreen_exit, color: Colors.white, size: 32),
-                  onPressed: _toggleFullscreen,
-                ),
-              ),
-            if (isFullscreen)
-              Positioned(
-                bottom: 20,
-                left: 20,
-                child: _buildCameraLogList(),
-              ),
-            if (isFullscreen)
-              Positioned(
-                bottom: 20,
-                right: 20,
-                child: IconButton(
-                  icon: const Icon(Icons.camera, color: Colors.white, size: 48),
-                  onPressed: () => _sendCameraImage(CameraTriggerType.manual),
-                  tooltip: '手动发送图像',
-                ),
-              ),
-            // 非全屏浮动窗口模式下的简单控制按钮
-            if (!isFullscreen)
-              Positioned(
-                top: 4,
-                right: 4,
-                child: Row(
-                  children: [
-                    if (_cameraService.hasMultipleCameras)
-                      IconButton(
-                        icon: const Icon(Icons.flip_camera_android, color: Colors.white, size: 18),
-                        onPressed: _switchCamera,
-                        tooltip: '切换摄像头',
-                      ),
-                    IconButton(
-                      icon: const Icon(Icons.maximize, color: Colors.white, size: 18),
+                  ),
+                if (isFullscreen)
+                  Positioned(
+                    top: 40,
+                    right: 16,
+                    child: IconButton(
+                      icon: const Icon(Icons.fullscreen_exit, color: Colors.white, size: 32),
                       onPressed: _toggleFullscreen,
-                      tooltip: '全屏',
                     ),
-                  ],
-                ),
-              ),
-          ],
-        ),
+                  ),
+                if (isFullscreen)
+                  Positioned(
+                    bottom: 20,
+                    left: 20,
+                    child: _buildCameraLogList(),
+                  ),
+                if (isFullscreen)
+                  Positioned(
+                    bottom: 20,
+                    right: 20,
+                    child: IconButton(
+                      icon: const Icon(Icons.camera, color: Colors.white, size: 48),
+                      onPressed: () => _sendCameraImage(CameraTriggerType.manual),
+                      tooltip: '手动发送图像',
+                    ),
+                  ),
+                // 非全屏浮动窗口模式下的简单控制按钮
+                if (!isFullscreen)
+                  Positioned(
+                    top: 4,
+                    right: 4,
+                    child: Row(
+                      children: [
+                        if (manager.cameras.length > 1)
+                          IconButton(
+                            icon: const Icon(Icons.flip_camera_android, color: Colors.white, size: 18),
+                            onPressed: _switchCamera,
+                            tooltip: '切换摄像头',
+                          ),
+                        IconButton(
+                          icon: const Icon(Icons.maximize, color: Colors.white, size: 18),
+                          onPressed: _toggleFullscreen,
+                          tooltip: '全屏',
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          );
+        },
       ),
     );
   }

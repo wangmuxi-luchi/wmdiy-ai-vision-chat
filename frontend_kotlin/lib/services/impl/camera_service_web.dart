@@ -38,6 +38,15 @@ class CameraServiceImpl implements CameraService {
   @override
   ValueNotifier<CameraController?> get controllerNotifier => _controllerNotifier;
   
+  @override
+  double get aspectRatio {
+    if (_controller == null || !_isInitialized) {
+      return 4.0 / 3.0; // 默认 4:3
+    }
+    final size = _controller!.value.previewSize;
+    return size != null ? size.width / size.height : 4.0 / 3.0;
+  }
+  
   String get viewType => _cameraViewType;
 
   @override

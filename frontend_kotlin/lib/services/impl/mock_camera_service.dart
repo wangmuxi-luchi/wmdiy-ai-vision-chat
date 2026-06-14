@@ -22,6 +22,9 @@ class MockCameraService implements CameraService {
   bool get isSwitching => _isSwitching;
   
   @override
+  double get aspectRatio => 4.0 / 3.0;
+  
+  @override
   CameraController? get controller => null;
   
   @override
