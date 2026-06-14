@@ -1,6 +1,7 @@
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import '../utils/logger.dart';
+import '../force_play_video.dart';
 
 class CameraPreviewWidgetImpl extends StatelessWidget {
   static const String _tag = 'CameraPreviewWidgetImpl';
@@ -253,7 +254,13 @@ class _DraggableCameraPreviewState extends State<DraggableCameraPreview> {
               onPanUpdate: _handlePanUpdate,
               onPanEnd: _handlePanEnd,
               child: MinimizedCameraIndicator(
-                onTap: () => setState(() => _isMinimized = false),
+                onTap: () {
+                  setState(() => _isMinimized = false);
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    widget.controller.resumePreview();
+                    forcePlayVideoElement();
+                  });
+                },
               ),
             ),
           ),
