@@ -1,0 +1,177 @@
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+
+:root {
+  --accent: #6366f1;
+  --accent2: #818cf8;
+  --green: #22c55e;
+  --red: #ef4444;
+  --text: #fff;
+  --text2: rgba(255,255,255,.55);
+  --glass: rgba(0,0,0,.4);
+  --glass2: rgba(0,0,0,.65);
+}
+
+html, body { height:100%; overflow:hidden; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background: #000; color: var(--text);
+}
+
+/* ====== 权限引导 ====== */
+.perm-screen {
+  position: fixed; inset:0; z-index:1000;
+  display:flex; align-items:center; justify-content:center;
+  background: #0a0a0f;
+}
+.perm-screen.hidden { display:none; }
+.perm-card {
+  text-align:center; padding:40px 28px; max-width:360px;
+}
+.perm-logo { width:72px; height:72px; margin-bottom:16px; }
+.perm-card h2 { font-size:20px; margin-bottom:6px; }
+.perm-card > p { color:var(--text2); font-size:13px; margin-bottom:24px; }
+.perm-items { display:flex; flex-direction:column; gap:8px; margin-bottom:24px; text-align:left; }
+.perm-item {
+  display:flex; align-items:center; gap:10px;
+  padding:10px 14px; border-radius:10px;
+  background:#1a1a24; font-size:13px;
+}
+.start-btn {
+  width:140px; height:46px; border-radius:23px;
+  border:none; background:var(--accent); color:#fff;
+  font-size:15px; font-weight:600; cursor:pointer; transition:.2s;
+}
+.start-btn:hover { background:var(--accent2); }
+.start-btn:active { transform:scale(.97); }
+.start-btn:disabled { opacity:.5; cursor:default; transform:none; }
+.perm-err {
+  color:var(--red); font-size:12px; margin-top:12px;
+  padding:8px; background:rgba(239,68,68,.1); border-radius:8px;
+}
+.perm-err.hidden { display:none; }
+
+/* ====== 主界面 ====== */
+.app { position:fixed; inset:0; }
+.app.hidden { display:none; }
+
+/* 全屏摄像头 */
+.cam-bg { position:absolute; inset:0; background:#000; overflow:hidden; }
+.cam-bg video { width:100%; height:100%; object-fit:cover; }
+
+/* 画面描述 */
+.vision-bar {
+  position:absolute; top:42px; left:12px; right:12px;
+  padding:8px 14px; border-radius:10px;
+  background:var(--glass); backdrop-filter:blur(10px);
+  font-size:12px; color:rgba(255,255,255,.7); line-height:1.4;
+  transition:opacity .3s;
+}
+.vision-bar.hidden { opacity:0; pointer-events:none; }
+
+/* 对话区 */
+.chat-zone {
+  position:absolute; bottom:150px; left:12px; right:12px;
+  max-height:40vh; overflow-y:auto;
+  display:flex; flex-direction:column; gap:8px;
+  padding:4px;
+}
+.msg-list { display:flex; flex-direction:column; gap:8px; }
+
+.msg {
+  max-width:78%; padding:10px 14px; border-radius:16px;
+  font-size:13px; line-height:1.55; word-break:break-word;
+  backdrop-filter:blur(10px);
+  animation:msgIn .3s ease;
+}
+@keyframes msgIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+
+.msg-user {
+  align-self:flex-end; background:var(--glass2); color:#fff;
+  border-bottom-right-radius:4px;
+}
+.msg-ai {
+  align-self:flex-start; background:var(--glass2); color:#fff;
+  border-bottom-left-radius:4px;
+}
+
+/* 打字动画 */
+.typing {
+  display:flex; gap:4px; padding:8px 14px; align-self:flex-start;
+  background:var(--glass2); border-radius:12px; backdrop-filter:blur(10px);
+}
+.typing.hidden { display:none; }
+.typing span {
+  width:6px; height:6px; border-radius:50%;
+  background:rgba(255,255,255,.5);
+  animation:bounce 1.2s infinite;
+}
+.typing span:nth-child(2){animation-delay:.2s}
+.typing span:nth-child(3){animation-delay:.4s}
+@keyframes bounce { 0%,60%,to{transform:translateY(0)} 30%{transform:translateY(-5px)} }
+
+/* ====== 音频电平指示器 ====== */
+.audio-meter {
+  position:absolute; bottom:96px; left:50%; transform:translateX(-50%);
+  display:flex; align-items:center; gap:10px;
+  padding:6px 14px; border-radius:20px;
+  background:var(--glass); backdrop-filter:blur(10px);
+}
+.meter-bar {
+  width:80px; height:4px; border-radius:2px;
+  background:rgba(255,255,255,.15); overflow:hidden;
+  position:relative; transition:width .1s;
+}
+.meter-bar::after {
+  content:''; position:absolute; inset:0;
+  background:var(--green); border-radius:2px;
+  transform-origin:left;
+  transition:transform .08s;
+}
+.meter-label {
+  font-size:9px; color:var(--text2); white-space:nowrap;
+  min-width:32px; text-align:center;
+}
+
+/* ====== 底部控制 ====== */
+.ctrl-bar {
+  position:absolute; bottom:28px; left:0; right:0;
+  display:flex; justify-content:center; gap:28px;
+}
+.ctrl-btn {
+  width:50px; height:50px; border-radius:50%;
+  border:2px solid rgba(255,255,255,.2);
+  background:var(--glass); color:#fff;
+  cursor:pointer; display:flex; align-items:center; justify-content:center;
+  backdrop-filter:blur(10px); transition:all .2s;
+}
+.ctrl-btn svg { width:22px; height:22px; }
+.ctrl-btn:hover { border-color:rgba(255,255,255,.4); background:rgba(255,255,255,.1); }
+.ctrl-btn.on { border-color:var(--green); box-shadow:0 0 12px rgba(34,197,94,.25); }
+.ctrl-btn.muted { border-color:var(--red); }
+.ctrl-btn.muted svg { opacity:.4; }
+.ctrl-btn.muted .icon-mic line:last-of-type,
+.ctrl-btn.muted .icon-mic line:nth-last-of-type(2) { display:none; }
+
+/* ====== 顶部状态 ====== */
+.top-bar {
+  position:absolute; top:12px; left:16px;
+  display:flex; align-items:center; gap:6px;
+  padding:5px 12px; border-radius:12px;
+  background:var(--glass); backdrop-filter:blur(10px);
+  font-size:11px;
+}
+.dot { width:7px; height:7px; border-radius:50%; }
+.dot.on { background:var(--green); }
+.dot.off { background:var(--red); }
+.dot.connecting { background:#f59e0b; animation:blink 1s infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+/* 滚动条 */
+.chat-zone::-webkit-scrollbar { width:3px; }
+.chat-zone::-webkit-scrollbar-thumb { background:rgba(255,255,255,.1); border-radius:2px; }
+
+@media (max-width:420px) {
+  .chat-zone { bottom:140px; }
+  .audio-meter { bottom:86px; }
+  .ctrl-bar { bottom:20px; gap:24px; }
+}
