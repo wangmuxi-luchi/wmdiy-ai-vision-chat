@@ -8,31 +8,11 @@ class WebTtsService implements TtsService {
   final StreamController<dynamic> _completionController = StreamController.broadcast();
   bool _isSpeaking = false;
 
-  WebTtsService() {
-    _setupEndCallback();
-  }
-
-  void _setupEndCallback() {
-    Timer.periodic(const Duration(milliseconds: 100), (timer) {
-      if (!_isSpeaking) {
-        timer.cancel();
-      }
-      final synth = globalContext.getProperty('speechSynthesis'.toJS);
-      if (synth != null) {
-        final speaking = (synth as JSObject).getProperty('speaking'.toJS);
-        if (speaking != null && speaking.isA<JSBoolean>()) {
-          if (!(speaking as JSBoolean).toDart && _isSpeaking) {
-            _isSpeaking = false;
-            _completionController.add(null);
-            timer.cancel();
-          }
-        }
-      }
-    });
-  }
+  WebTtsService();
 
   @override
   Future<void> speak(String text, {String language = 'zh-CN', double rate = 1.0}) async {
+    final completer = Completer<void>();
     try {
       final escapedText = text
           .replaceAll('\\', '\\\\')
@@ -43,17 +23,42 @@ class WebTtsService implements TtsService {
         'new SpeechSynthesisUtterance(\'$escapedText\')'.toJS,
       );
       if (utterance != null) {
-        (utterance as JSObject).setProperty('lang'.toJS, language.toJS);
-        utterance.setProperty('rate'.toJS, rate.toJS);
+        final utteranceObj = utterance as JSObject;
+        utteranceObj.setProperty('lang'.toJS, language.toJS);
+        utteranceObj.setProperty('rate'.toJS, rate.toJS);
+
+        utteranceObj.setProperty('onend'.toJS, (() {
+          _isSpeaking = false;
+          _completionController.add(null);
+          if (!completer.isCompleted) {
+            completer.complete();
+          }
+        }).toJS);
+
+        utteranceObj.setProperty('onerror'.toJS, ((JSObject event) {
+          _isSpeaking = false;
+          debugPrint('Web TTS 播放错误: $event');
+          if (!completer.isCompleted) {
+            completer.complete();
+          }
+        }).toJS);
+
         final synth = globalContext.getProperty('speechSynthesis'.toJS);
         if (synth != null) {
-          (synth as JSObject).callMethod('speak'.toJS, utterance);
+          (synth as JSObject).callMethod('speak'.toJS, utteranceObj);
+          _isSpeaking = true;
+        } else {
+          if (!completer.isCompleted) completer.complete();
         }
-        _isSpeaking = true;
+      } else {
+        if (!completer.isCompleted) completer.complete();
       }
     } catch (e) {
+      _isSpeaking = false;
       debugPrint('Web TTS 错误: $e');
+      if (!completer.isCompleted) completer.complete();
     }
+    return completer.future;
   }
 
   @override

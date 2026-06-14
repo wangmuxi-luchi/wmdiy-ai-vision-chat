@@ -292,7 +292,11 @@ class WebSpeechRecognitionService implements SpeechRecognitionService {
       Logger.d('WebASR', '注册回调函数...');
 
       _webAudioRecognizer!['OnRecognitionStart'] = js.allowInterop((js.JsObject res) {
-        Logger.d('WebASR', '【回调】OnRecognitionStart: res=$res');
+        if (_isDisposed) {
+          Logger.d('WebASR', '【回调】OnRecognitionStart: 已销毁，忽略 (isDisposed=$_isDisposed, isRecording=$_isRecording)');
+          return;
+        }
+        Logger.d('WebASR', '【回调】OnRecognitionStart: 语音识别已开始');
         _isCanStop = true;
 
         if (_contextPrompt != null) {
@@ -307,48 +311,59 @@ class WebSpeechRecognitionService implements SpeechRecognitionService {
       Logger.d('WebASR', '已注册 OnRecognitionStart 回调');
 
       _webAudioRecognizer!['OnSentenceBegin'] = js.allowInterop((js.JsObject res) {
-        Logger.d('WebASR', '【回调】OnSentenceBegin: res=$res');
+        if (_isDisposed) {
+          Logger.d('WebASR', '【回调】OnSentenceBegin: 已销毁，忽略 (isDisposed=$_isDisposed, isRecording=$_isRecording)');
+          return;
+        }
+        if (!_isRecording) {
+          Logger.d('WebASR', '【回调】OnSentenceBegin: 已停止录音，忽略 (isDisposed=$_isDisposed, isRecording=$_isRecording)');
+          return;
+        }
+        final result = res['result'];
+        final text = result != null ? (result['voice_text_str'] ?? '') : '';
+        Logger.d('WebASR', '【回调】OnSentenceBegin: 一句话开始, text="$text"');
       });
       Logger.d('WebASR', '已注册 OnSentenceBegin 回调');
 
       _webAudioRecognizer!['OnRecognitionResultChange'] = js.allowInterop((js.JsObject res) {
         if (_isDisposed) {
-          Logger.d('WebASR', '【回调】OnRecognitionResultChange: 已销毁，忽略');
+          Logger.d('WebASR', '【回调】OnRecognitionResultChange: 已销毁，忽略 (isDisposed=$_isDisposed, isRecording=$_isRecording)');
+          return;
+        }
+        if (!_isRecording) {
+          Logger.d('WebASR', '【回调】OnRecognitionResultChange: 已停止录音，忽略 (isDisposed=$_isDisposed, isRecording=$_isRecording)');
           return;
         }
         final result = res['result'];
-        Logger.d('WebASR', '【回调】OnRecognitionResultChange: result=$result');
-        if (result != null) {
-          final text = result['voice_text_str'] ?? '';
-          Logger.d('WebASR', '【回调】OnRecognitionResultChange: 识别文本="$text"');
-          if (_resultController != null && !_resultController!.isClosed) {
-            _resultController!.add(ASRResult(text.toString(), isFinal: false));
-            Logger.d('WebASR', '已将识别结果添加到Stream');
-          }
+        final text = result != null ? (result['voice_text_str'] ?? '') : '';
+        final sliceType = result != null ? (result['slice_type'] ?? '') : '';
+        Logger.d('WebASR', '【回调】OnRecognitionResultChange [slice_type=$sliceType]: text="$text"');
+        if (text.toString().isNotEmpty && _resultController != null && !_resultController!.isClosed) {
+          _resultController!.add(ASRResult(text.toString(), isFinal: false));
         }
       });
       Logger.d('WebASR', '已注册 OnRecognitionResultChange 回调');
 
       _webAudioRecognizer!['OnSentenceEnd'] = js.allowInterop((js.JsObject res) {
         if (_isDisposed) {
-          Logger.d('WebASR', '【回调】OnSentenceEnd: 已销毁，忽略');
+          Logger.d('WebASR', '【回调】OnSentenceEnd: 已销毁，忽略 (isDisposed=$_isDisposed, isRecording=$_isRecording)');
+          return;
+        }
+        if (!_isRecording) {
+          Logger.d('WebASR', '【回调】OnSentenceEnd: 已停止录音，忽略 (isDisposed=$_isDisposed, isRecording=$_isRecording)');
           return;
         }
         final result = res['result'];
-        Logger.d('WebASR', '【回调】OnSentenceEnd: result=$result');
-        if (result != null) {
-          final text = result['voice_text_str'] ?? '';
-          Logger.d('WebASR', '【回调】OnSentenceEnd: 最终文本="$text"');
-          if (_resultController != null && !_resultController!.isClosed) {
-            _resultController!.add(ASRResult(text.toString(), isFinal: true));
-            Logger.d('WebASR', '已将最终识别结果添加到Stream');
-          }
+        final text = result != null ? (result['voice_text_str'] ?? '') : '';
+        Logger.d('WebASR', '【回调】OnSentenceEnd: 一句话结束, text="$text"');
+        if (text.toString().isNotEmpty && _resultController != null && !_resultController!.isClosed) {
+          _resultController!.add(ASRResult(text.toString(), isFinal: true));
         }
       });
       Logger.d('WebASR', '已注册 OnSentenceEnd 回调');
 
       _webAudioRecognizer!['OnRecognitionComplete'] = js.allowInterop((js.JsObject res) {
-        Logger.d('WebASR', '【回调】OnRecognitionComplete: res=$res');
+        Logger.d('WebASR', '【回调】OnRecognitionComplete: 识别完成');
         _isRecording = false;
         _isCanStop = false;
         _closeController();
@@ -357,12 +372,11 @@ class WebSpeechRecognitionService implements SpeechRecognitionService {
 
       _webAudioRecognizer!['OnError'] = js.allowInterop((dynamic err) {
         if (_isDisposed) {
-          Logger.d('WebASR', '【回调】OnError: 已销毁，忽略');
+          Logger.d('WebASR', '【回调】OnError: 已销毁，忽略 (isDisposed=$_isDisposed, isRecording=$_isRecording)');
           return;
         }
         String errorMsg = '未知错误';
         if (err is js.JsObject) {
-          // 尝试获取详细错误信息
           if (err['code'] != null) {
             errorMsg = '错误码: ${err['code']}';
           }
@@ -378,8 +392,8 @@ class WebSpeechRecognitionService implements SpeechRecognitionService {
         } else {
           errorMsg = err.toString();
         }
-        Logger.e('WebASR', '【回调】OnError: $errorMsg');
-        if (_resultController != null && !_resultController!.isClosed) {
+        Logger.e('WebASR', '【回调】OnError [$_isRecording]: $errorMsg');
+        if (_isRecording && _resultController != null && !_resultController!.isClosed) {
           _resultController!.addError(Exception('识别错误: $errorMsg'));
         }
         _isRecording = false;
@@ -389,6 +403,10 @@ class WebSpeechRecognitionService implements SpeechRecognitionService {
       Logger.d('WebASR', '已注册 OnError 回调');
 
       _webAudioRecognizer!['OnRecorderStop'] = js.allowInterop((dynamic res) {
+        if (_isDisposed) {
+          Logger.d('WebASR', '【回调】OnRecorderStop: 已销毁，忽略 (isDisposed=$_isDisposed, isRecording=$_isRecording)');
+          return;
+        }
         Logger.d('WebASR', '【回调】OnRecorderStop: 录音器已停止');
       });
       Logger.d('WebASR', '已注册 OnRecorderStop 回调');
@@ -431,19 +449,32 @@ class WebSpeechRecognitionService implements SpeechRecognitionService {
 
   @override
   Future<void> stopListening() async {
+    Logger.d('WebASR', '========== 停止语音识别 ==========');
+    Logger.d('WebASR', '当前状态: _isRecording=$_isRecording, _isCanStop=$_isCanStop, _isDisposed=$_isDisposed');
     try {
       _isRecording = false;
 
-      if (_webAudioRecognizer != null && _isCanStop) {
+      if (_webAudioRecognizer != null) {
+        Logger.d('WebASR', '调用 WebAudioSpeechRecognizer.stop()...');
         try {
           _webAudioRecognizer!.callMethod('stop');
+          Logger.d('WebASR', 'stop() 调用成功');
         } catch (e) {
-          Logger.d('WebASR', '停止识别时出错: $e');
+          Logger.d('WebASR', 'stop() 调用失败: $e');
         }
+        try {
+          destroyStream();
+          Logger.d('WebASR', 'destroyStream() 调用成功');
+        } catch (e) {
+          Logger.d('WebASR', 'destroyStream() 调用失败: $e');
+        }
+      } else {
+        Logger.d('WebASR', '_webAudioRecognizer 为空，跳过 stop');
       }
 
       _isCanStop = false;
       _closeController();
+      Logger.d('WebASR', '========== 停止语音识别完成 ==========');
     } catch (e) {
       Logger.e('WebASR', '停止失败: $e');
     }
