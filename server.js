@@ -32,6 +32,7 @@ const path = require('path');
 const sharp = require('sharp');
 const EventBus = require('./event_bus');
 const { getRealtimeSession, removeRealtimeSession, extractPCMFromWAV } = require('./realtime_handler');
+const { processUserInput, updateFrameDescription, cleanupSession } = require('./agent_orchestrator');
 
 const PORT = parseInt(process.env.PORT || '8000', 10);
 const STEPFUN_API_KEY = process.env.STEPFUN_API_KEY || '';
@@ -92,43 +93,63 @@ wss.on('connection', (ws) => {
   }
 
   ws.on('message', async (raw) => {
+    // 先尝试解析 JSON（Flutter 的 web_socket_channel 可能以二进制帧发送文本消息）
+    if (Buffer.isBuffer(raw)) {
+      try {
+        const maybeJson = JSON.parse(raw.toString());
+        if (maybeJson && maybeJson.type) {
+          await handleJsonMessage(maybeJson, sid, ws, rtMgr);
+          return;
+        }
+      } catch {}
+      // 非 JSON 二进制 → 音频数据（WAV PCM）
+      handleAudioBinary(sid, raw, rtMgr, ws);
+      return;
+    }
+
     let msg;
     try {
-      const str = Buffer.isBuffer(raw) ? raw.toString() : String(raw);
-      msg = JSON.parse(str);
+      msg = JSON.parse(raw.toString());
     } catch { return; }
 
-    try {
-      switch (msg.type) {
-        case 'ping':
-          ws.send(JSON.stringify({ type: 'pong' }));
-          break;
-        case 'frame':
-          console.log(`[Frame] 收到图像数据: ${sid} | Base64长度: ${msg.data?.length || 0}`);
-          await handleFrame(sid, msg.data, ws);
-          break;
-        case 'audio':
-          console.log(`[Audio] 收到音频数据: ${sid} | Base64长度: ${msg.data?.length || 0}`);
-          handleAudio(sid, msg.data, rtMgr, ws);
-          break;
-        case 'test_chat':
-        case 'text':
-          console.log(`[Chat] 收到文本消息: ${sid} | 内容: "${msg.data?.substring(0, 50) || ''}${msg.data?.length > 50 ? '...' : ''}"`);
-          await handleChat(sid, msg.data, ws);
-          break;
-        default:
-          console.log(`[WS] 未知消息类型: ${sid} | type: ${msg.type}`);
-      }
-    } catch (e) { console.error(`[WS] 错误:`, e.message); }
+    await handleJsonMessage(msg, sid, ws, rtMgr);
   });
 
   ws.on('close', () => {
     sessions.delete(sid);
+    cleanupSession(sid);
     if (rtMgr) { rtMgr.disconnect(); removeRealtimeSession(sid); }
     EventBus.emit('session_disconnected', { sessionId: sid, timestamp: Date.now() });
     console.log(`[WS] 断开: ${sid}`);
   });
 });
+
+// ── JSON 消息路由 ──
+async function handleJsonMessage(msg, sid, ws, rtMgr) {
+  try {
+    switch (msg.type) {
+      case 'ping':
+        ws.send(JSON.stringify({ type: 'pong' }));
+        break;
+      case 'frame':
+        console.log(`[Frame] 收到图像数据: ${sid} | Base64长度: ${msg.data?.length || 0}`);
+        await handleFrame(sid, msg.data, ws);
+        break;
+      case 'audio':
+        console.log(`[Audio] 收到音频数据: ${sid} | Base64长度: ${msg.data?.length || 0}`);
+        handleAudio(sid, msg.data, rtMgr, ws);
+        break;
+      case 'test_chat':
+      case 'text':
+      case 'speech':
+        console.log(`[Chat] 收到${msg.type === 'speech' ? '语音' : '文本'}消息: ${sid} | 内容: "${msg.data?.substring(0, 50) || ''}${msg.data?.length > 50 ? '...' : ''}"`);
+        await handleChat(sid, msg.data, ws);
+        break;
+      default:
+        console.log(`[WS] 未知消息类型: ${sid} | type: ${msg.type}`);
+    }
+  } catch (e) { console.error(`[WS] 错误:`, e.message); }
+}
 
 // ── 帧分析 ──
 async function handleFrame(sid, b64, ws) {
@@ -157,21 +178,27 @@ async function handleFrame(sid, b64, ws) {
     const elapsed = Date.now() - start;
     const desc = r.choices[0]?.message?.content || '分析中...';
     console.log(`[Frame] ${sid} 分析完成 (${elapsed}ms): ${desc.substring(0, 50)}`);
+    updateFrameDescription(sid, desc);
     ws.send(JSON.stringify({ type: 'frame_analyzed', description: desc, timestamp: Date.now() }));
     EventBus.emit('frame_analyzed', { sessionId: sid, description: desc, timestamp: Date.now() });
   } catch (e) { 
     console.error('[Frame] 分析失败:', e.message); 
-    response = '分析失败: ' + e.message;
+    const response = '分析失败: ' + e.message;
     ws.send(JSON.stringify({ type: 'frame_analyzed', description: response, timestamp: Date.now() }));
   }
 }
 
-// ── 实时音频 → 阶跃星辰 Realtime ──
-function handleAudio(sid, b64, rtMgr, ws) {
+// ── 实时音频（二进制 WAV → 阶跃星辰 Realtime）──
+function handleAudioBinary(sid, wavBuffer, rtMgr, ws) {
   if (!rtMgr?.connected) return;
   try {
-    const wav = Buffer.from(b64, 'base64');
-    const pcm = extractPCMFromWAV(wav);
+    // 存 .wav 方便调试回听
+    const fs = require('fs');
+    const tmp = `tmp/${sid}_${Date.now()}.wav`;
+    fs.mkdirSync('tmp', { recursive: true });
+    fs.writeFileSync(tmp, wavBuffer);
+    // 去 WAV 头取 PCM → 直喂阶跃星辰
+    const pcm = extractPCMFromWAV(wavBuffer);
     if (pcm.length > 0) rtMgr.inputAudio(pcm);
   } catch (e) { console.error('[Audio]', e.message); }
 }
@@ -184,28 +211,14 @@ async function handleChat(sid, text, ws) {
   }
   
   console.log(`[Chat] 收到用户消息: ${sid} | 内容: "${text}"`);
+  console.log(`[Chat] openaiClient=${!!openaiClient}, API_OK=${API_OK}`);
   EventBus.emit('user_speech', { sessionId: sid, text, timestamp: Date.now() });
 
-  let reply;
-  if (!API_OK) {
-    reply = '[演示模式] 请配置 STEPFUN_API_KEY';
-  } else {
-    try {
-      const r = await openaiClient.chat.completions.create({
-        model: 'step-3.7-flash',
-        messages: [{ role: 'system', content: '你是AI视觉对话助手，用中文简洁回应，2-3句话。' }, { role: 'user', content: text }],
-        max_tokens: 500,
-        reasoning_effort: 'low',
-      });
-      reply = r.choices[0]?.message?.content || '抱歉，请再说一次。';
-      console.log(`[Chat] AI回复完成: ${sid} | 结果: "${reply}"`);
-    } catch (e) {
-      console.error('[Chat]', e.message);
-      reply = '抱歉，暂时无法回应。';
-    }
-  }
+  const reply = await processUserInput(openaiClient, sid, text, API_OK);
+  console.log(`[Chat] AI回复完成: ${sid} | 结果: "${reply.substring(0, 50)}"`);
+
   EventBus.emit('assistant_reply', { sessionId: sid, text: reply, timestamp: Date.now() });
-  console.log(`[Chat] 回复已发送: ${sid}`);
+  console.log(`[Chat] assistant_reply 事件已发送: ${sid}`);
 }
 
 // ── 全局事件 → 对应浏览器 ──

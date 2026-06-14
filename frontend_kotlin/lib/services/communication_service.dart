@@ -7,6 +7,8 @@ abstract class CommunicationService {
   
   Future<String> sendTextMessage(String message);
   
+  Future<String> sendSpeechMessage(String message);
+  
   Future<String> sendImage(Uint8List imageData);
   
   Future<void> updateConnection(String host, int port);

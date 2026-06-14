@@ -41,6 +41,7 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _isTtsEnabled = false; // 文字转语音朗读开关
   bool _isStoppingRecording = false; // 是否正在停止录音（用于防止关闭麦克风时接收缓存结果）
   bool _isTtsSpeaking = false; // 是否正在进行TTS朗读（防止朗读期间误开麦克风）
+  int _recordingId = 0; // 录音会话计数器，防止旧录音的 onDone/onError 误改 _isMicOn
 
   String _pendingSpeechText = '';
   String _confirmedSpeechText = ''; // 已确认的文本（一句话结束后累加）
@@ -143,7 +144,7 @@ class _ChatScreenState extends State<ChatScreen> {
             final bool wasMicOn = _isMicOn;
             if (wasMicOn) {
               Logger.d('ChatScreen', '[TTS] TTS朗读前自动关闭麦克风');
-              _toggleMic();
+              _toggleMic(turnOn: false);
             }
 
             _isTtsSpeaking = true;
@@ -153,7 +154,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
             if (wasMicOn && _isTtsEnabled && mounted) {
               Logger.d('ChatScreen', '[TTS] 朗读完成，自动恢复麦克风');
-              _toggleMic();
+              _toggleMic(turnOn: true);
             }
           } catch (e) {
             _isTtsSpeaking = false;
@@ -251,13 +252,19 @@ class _ChatScreenState extends State<ChatScreen> {
     super.dispose();
   }
 
-  Future<void> _toggleMic() async {
-    if (_isTtsSpeaking) {
+  Future<void> _toggleMic({bool? turnOn, bool skipRecording = false}) async {
+    final targetState = turnOn ?? !_isMicOn;
+    if (targetState && _isTtsSpeaking) {
       Logger.d('ChatScreen', '[TTS] 朗读中，禁止打开麦克风');
       return;
     }
-    Logger.d('ChatScreen', '切换麦克风状态: 当前=$_isMicOn');
-    setState(() => _isMicOn = !_isMicOn);
+    if (_isMicOn == targetState) {
+      Logger.d('ChatScreen', '麦克风状态已是 ${targetState ? "开启" : "关闭"}，无需切换');
+      return;
+    }
+    Logger.d('ChatScreen', '切换麦克风状态: $_isMicOn → $targetState${skipRecording ? ' (仅更新状态)' : ''}');
+    setState(() => _isMicOn = targetState);
+    if (skipRecording) return;
     if (_isMicOn) {
       _startRecording();
     } else {
@@ -268,14 +275,14 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _startRecording() async {
     Logger.d('ChatScreen', '========== 开始录音 ==========');
     try {
-      Logger.d('ChatScreen', '调用 speechService.startListening()...');
+      final recordingId = ++_recordingId;
+      Logger.d('ChatScreen', '调用 speechService.startListening()... (recordingId=$recordingId)');
       Stream<ASRResult> asrStream = _speechService.startListening();
       Logger.d('ChatScreen', 'startListening() 返回成功，开始监听Stream');
       
       await _asrSubscription?.cancel();
       _asrSubscription = asrStream.listen(
         (result) {
-          // 如果正在停止录音，忽略收到的数据（可能是SDK缓存的旧数据）
           if (!mounted || _isStoppingRecording) {
             Logger.d('ChatScreen', '收到识别结果但已停止，忽略: text=${result.text}');
             return;
@@ -287,18 +294,15 @@ class _ChatScreenState extends State<ChatScreen> {
           
           setState(() {
             if (isFinal) {
-              // 一句话结束（最终结果）：累加到已确认文本
               _confirmedSpeechText += text;
               _pendingSpeechText = _confirmedSpeechText;
             } else {
-              // 识别变化（中间结果）：显示已确认文本 + 当前识别内容
               _pendingSpeechText = _confirmedSpeechText + text;
             }
             _speechInputController.text = _pendingSpeechText;
           });
           Logger.d('ChatScreen', 'UI已更新识别结果: "$_pendingSpeechText"');
           
-          // 如果开启自动发送且收到最终结果，立即发送
           if (_isAutoSendSpeech && isFinal && _pendingSpeechText.trim().isNotEmpty) {
             Logger.d('ChatScreen', '自动发送已开启，发送识别结果');
             _sendPendingSpeech();
@@ -306,19 +310,17 @@ class _ChatScreenState extends State<ChatScreen> {
         },
         onError: (e) {
           Logger.e('ChatScreen', '语音识别错误: $e');
-          if (mounted) {
+          if (mounted && _recordingId == recordingId) {
+            _toggleMic(turnOn: false, skipRecording: true);
             setState(() {
               _pendingSpeechText = "错误: $e";
-              _isMicOn = false;
             });
           }
         },
         onDone: () {
-          Logger.d('ChatScreen', '语音识别Stream结束');
-          if (mounted && _isMicOn) {
-            setState(() {
-              _isMicOn = false;
-            });
+          Logger.d('ChatScreen', '语音识别Stream结束 (recordingId=$recordingId, current=$_recordingId)');
+          if (mounted && _recordingId == recordingId) {
+            _toggleMic(turnOn: false, skipRecording: true);
           }
         },
       );
@@ -326,9 +328,9 @@ class _ChatScreenState extends State<ChatScreen> {
     } catch (e) {
       Logger.e('ChatScreen', '启动录音异常: $e');
       if (mounted) {
+        _toggleMic(turnOn: false, skipRecording: true);
         setState(() {
           _pendingSpeechText = "错误: $e";
-          _isMicOn = false;
         });
       }
     }
@@ -412,12 +414,22 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _sendPendingSpeech() {
     if (_pendingSpeechText.trim().isEmpty) return;
-    _sendUserMessage(_pendingSpeechText);
+    final text = _pendingSpeechText.trim();
+    final userMsg = ChatMessage(text: text, isUser: true);
     setState(() {
+      _messages.add(userMsg);
       _pendingSpeechText = '';
-      _confirmedSpeechText = ''; // 清空已确认文本
+      _confirmedSpeechText = '';
       _speechInputController.clear();
     });
+    _scrollToBottom();
+    
+    if (_communicationService.isConnected) {
+      _communicationService.sendSpeechMessage(text).catchError((error) {
+        Logger.e('ChatScreen', '发送语音消息失败: $error');
+        return '发送失败';
+      });
+    }
   }
 
   void _scrollToBottom() {

@@ -37,6 +37,9 @@ class MockCommunicationService implements CommunicationService {
   Future<String> sendTextMessage(String message) async => '';
 
   @override
+  Future<String> sendSpeechMessage(String message) async => '';
+
+  @override
   Future<String> sendImage(List<int> imageData) async => '';
 
   @override
