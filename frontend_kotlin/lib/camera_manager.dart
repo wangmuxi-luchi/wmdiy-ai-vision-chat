@@ -11,10 +11,12 @@ class CameraManager extends ChangeNotifier {
   CameraController? _controller;
   bool _isFullscreen = false;
   bool _isCameraOn = true;
+  bool _imageSentForCurrentSentence = false;
 
   CameraController? get controller => _controller;
   bool get isFullscreen => _isFullscreen;
   bool get isCameraOn => _isCameraOn;
+  bool get imageSentForCurrentSentence => _imageSentForCurrentSentence;
   List<CameraDescription> get cameras => _cameras;
   int get currentCameraIndex => _currentCameraIndex;
   CameraDescription get currentCamera => _cameras[_currentCameraIndex];
@@ -79,7 +81,8 @@ class CameraManager extends ChangeNotifier {
     try {
       Logger.d(_tag, '_resetController() - 开始初始化...');
       await newController.initialize();
-      Logger.d(_tag, '_resetController() - 初始化完成');
+      await newController.setFlashMode(FlashMode.off);
+      Logger.d(_tag, '_resetController() - 初始化完成，闪光灯已关闭');
     } catch (e) {
       Logger.e(_tag, '摄像头初始化失败: $e');
       notifyListeners();
@@ -129,6 +132,14 @@ class CameraManager extends ChangeNotifier {
         forcePlayVideoElement();
       }
     });
+  }
+
+  void markImageSent() {
+    _imageSentForCurrentSentence = true;
+  }
+
+  void resetImageSentFlag() {
+    _imageSentForCurrentSentence = false;
   }
 
   @override

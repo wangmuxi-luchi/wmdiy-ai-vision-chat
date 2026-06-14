@@ -37,11 +37,12 @@ class _ChatScreenState extends State<ChatScreen> {
   
   bool _isMicOn = false;
   bool _isSidebarOpen = false;
-  bool _isAutoSendSpeech = false; // 语音转文字自动发送开关
-  bool _isTtsEnabled = false; // 文字转语音朗读开关
-  bool _isStoppingRecording = false; // 是否正在停止录音（用于防止关闭麦克风时接收缓存结果）
-  bool _isTtsSpeaking = false; // 是否正在进行TTS朗读（防止朗读期间误开麦克风）
-  int _recordingId = 0; // 录音会话计数器，防止旧录音的 onDone/onError 误改 _isMicOn
+  bool _isAutoSendSpeech = false;
+  bool _isAutoSendImage = false;
+  bool _isTtsEnabled = false;
+  bool _isStoppingRecording = false;
+  bool _isTtsSpeaking = false;
+  int _recordingId = 0;
 
   String _pendingSpeechText = '';
   String _confirmedSpeechText = ''; // 已确认的文本（一句话结束后累加）
@@ -239,6 +240,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void dispose() {
     _inputController.dispose();
+    _speechInputController.dispose();
     _scrollController.dispose();
     _speechService.dispose();
     _commandReceiverService.dispose();
@@ -303,6 +305,16 @@ class _ChatScreenState extends State<ChatScreen> {
           });
           Logger.d('ChatScreen', 'UI已更新识别结果: "$_pendingSpeechText"');
           
+          // 自动发送图像：句子开始时（第一个SLICE）发一帧，句子结束时（SEGMENT）重置标记
+          final cameraManager = context.read<CameraManager>();
+          if (_isAutoSendImage && !isFinal && !cameraManager.imageSentForCurrentSentence) {
+            Logger.d('ChatScreen', '[自动发送图像] 新句子第一帧SLICE，捕获图像');
+            cameraManager.markImageSent();
+            _captureAndSendFrame();
+          } else if (isFinal) {
+            cameraManager.resetImageSentFlag();
+          }
+          
           if (_isAutoSendSpeech && isFinal && _pendingSpeechText.trim().isNotEmpty) {
             Logger.d('ChatScreen', '自动发送已开启，发送识别结果');
             _sendPendingSpeech();
@@ -311,6 +323,7 @@ class _ChatScreenState extends State<ChatScreen> {
         onError: (e) {
           Logger.e('ChatScreen', '语音识别错误: $e');
           if (mounted && _recordingId == recordingId) {
+            _speechService.stopListening();
             _toggleMic(turnOn: false, skipRecording: true);
             setState(() {
               _pendingSpeechText = "错误: $e";
@@ -320,6 +333,7 @@ class _ChatScreenState extends State<ChatScreen> {
         onDone: () {
           Logger.d('ChatScreen', '语音识别Stream结束 (recordingId=$recordingId, current=$_recordingId)');
           if (mounted && _recordingId == recordingId) {
+            _speechService.stopListening();
             _toggleMic(turnOn: false, skipRecording: true);
           }
         },
@@ -341,9 +355,9 @@ class _ChatScreenState extends State<ChatScreen> {
       _isStoppingRecording = true;
     });
     try {
+      await _speechService.stopListening();
       await _asrSubscription?.cancel();
       _asrSubscription = null;
-      await _speechService.stopListening();
     } catch (e) {
       Logger.e('ChatScreen', 'Error stopping recording: $e');
     }
@@ -370,6 +384,27 @@ class _ChatScreenState extends State<ChatScreen> {
       } catch (_) {}
     }
   }
+
+  void _toggleAutoSendImage() {
+    setState(() {
+      _isAutoSendImage = !_isAutoSendImage;
+    });
+    Logger.i('ChatScreen', '[自动发送图像] 开关: $_isAutoSendImage');
+  }
+
+  Future<void> _captureAndSendFrame() async {
+    final manager = context.read<CameraManager>();
+    if (manager.controller == null || !manager.isCameraOn) return;
+    if (!_communicationService.isConnected) return;
+
+    try {
+      final XFile file = await manager.controller!.takePicture();
+      final imageData = await file.readAsBytes();
+      await _communicationService.sendImage(imageData);
+    } catch (e) {
+      Logger.e('ChatScreen', '[自动发送图像] 捕获失败: $e');
+    }
+  }
   
   Future<void> _switchCamera() async {
     final manager = context.read<CameraManager>();
@@ -383,7 +418,7 @@ class _ChatScreenState extends State<ChatScreen> {
     Logger.d('ChatScreen', '_toggleFullscreen() - 调用后: isFullscreen=${manager.isFullscreen}');
   }
 
-  void _sendUserMessage(String text) {
+  Future<void> _sendUserMessage(String text) async {
     if (text.trim().isEmpty) return;
     
     final userMsg = ChatMessage(text: text.trim(), isUser: true);
@@ -410,9 +445,13 @@ class _ChatScreenState extends State<ChatScreen> {
         }
       });
     }
+
+    if (_isAutoSendImage) {
+      await _captureAndSendFrame();
+    }
   }
 
-  void _sendPendingSpeech() {
+  Future<void> _sendPendingSpeech() async {
     if (_pendingSpeechText.trim().isEmpty) return;
     final text = _pendingSpeechText.trim();
     final userMsg = ChatMessage(text: text, isUser: true);
@@ -429,6 +468,10 @@ class _ChatScreenState extends State<ChatScreen> {
         Logger.e('ChatScreen', '发送语音消息失败: $error');
         return '发送失败';
       });
+    }
+
+    if (_isAutoSendImage) {
+      await _captureAndSendFrame();
     }
   }
 
@@ -460,6 +503,12 @@ class _ChatScreenState extends State<ChatScreen> {
           onPressed: _toggleSidebar,
         ),
         actions: [
+          IconButton(
+            icon: Icon(_isAutoSendImage ? Icons.photo_camera : Icons.photo_camera_outlined),
+            color: _isAutoSendImage ? Colors.orange : null,
+            onPressed: _toggleAutoSendImage,
+            tooltip: _isAutoSendImage ? '关闭自动发送图像' : '开启自动发送图像(每秒1帧)',
+          ),
           IconButton(
             icon: Icon(_isMicOn ? Icons.mic : Icons.mic_off),
             color: _isMicOn ? Colors.red : null,
@@ -584,6 +633,11 @@ class _ChatScreenState extends State<ChatScreen> {
                     left: 16,
                     child: Row(
                       children: [
+                        IconButton(
+                          icon: Icon(_isAutoSendImage ? Icons.photo_camera : Icons.photo_camera_outlined, color: _isAutoSendImage ? Colors.orange : Colors.white, size: 32),
+                          onPressed: _toggleAutoSendImage,
+                          tooltip: _isAutoSendImage ? '关闭自动发送图像' : '开启自动发送图像(每秒1帧)',
+                        ),
                         IconButton(
                           icon: Icon(_isMicOn ? Icons.mic : Icons.mic_off, color: _isMicOn ? Colors.red : Colors.white, size: 32),
                           onPressed: _toggleMic,
