@@ -81,12 +81,19 @@ class CameraManager extends ChangeNotifier {
     try {
       Logger.d(_tag, '_resetController() - 开始初始化...');
       await newController.initialize();
-      await newController.setFlashMode(FlashMode.off);
-      Logger.d(_tag, '_resetController() - 初始化完成，闪光灯已关闭');
+      Logger.d(_tag, '_resetController() - 初始化完成');
     } catch (e) {
       Logger.e(_tag, '摄像头初始化失败: $e');
       notifyListeners();
       return;
+    }
+
+    // 3.1 关闭闪光灯（Web 平台不支持，失败时静默跳过）
+    try {
+      await newController.setFlashMode(FlashMode.off);
+      Logger.d(_tag, '_resetController() - 闪光灯已关闭');
+    } catch (e) {
+      Logger.d(_tag, '_resetController() - 闪光灯设置跳过（当前平台不支持）: $e');
     }
 
     // 4. 如果当前是关闭状态，新摄像头初始化后也保持暂停
