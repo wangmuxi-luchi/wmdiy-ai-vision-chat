@@ -99,18 +99,13 @@ async function processUserInput(client, sessionId, userText, apiAvailable) {
     const reply = response.choices[0]?.message?.content || '抱歉，我没有理解你说的话。';
 
     // 记录 Token 消耗
-    if (response.usage) {
-      budget.addTokens(response.usage.total_tokens);
-    } else {
-      budget.addTokens(ConversationBudget.estimateTokens(userMessage + reply));
-    }
+    budget.addTokens(ConversationBudget.estimateTokens(userMessage + reply));
 
     // 保持对话历史
     history.push({ role: 'assistant', content: reply });
 
     // 控制历史长度（保留最近 20 条消息 + system prompt）
     if (history.length > 21) {
-      // 保留 system prompt + 最近 20 条
       const systemMsg = history[0];
       session.history = [systemMsg, ...history.slice(-20)];
     }

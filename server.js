@@ -253,6 +253,7 @@ async function handleAudioBinary(sid, wavBuffer, rtMgr, ws) {
     // 语音：累积 PCM
     if (!audioChunks.has(sid)) {
       audioChunks.set(sid, []);
+      console.log(`[Audio] 检测到语音开始: ${sid}`);
       EventBus.emit('speech_start', { sessionId: sid, timestamp: Date.now() });
     }
     audioChunks.get(sid).push(pcm);
@@ -287,13 +288,18 @@ async function processSpeech(sid, ws) {
   try {
     // 1. ASR
     const userText = await transcribeAudio(openaiClient, wav);
-    if (!userText?.trim()) return;
+    if (!userText?.trim()) { console.log(`[HTTP-ASR] 识别为空: ${sid}`); return; }
+    console.log(`[HTTP-ASR] 用户说: "${userText}"`);
 
     EventBus.emit('user_speech', { sessionId: sid, text: userText, timestamp: Date.now() });
+    console.log(`[HTTP-ASR] user_speech 已发送`);
 
     // 2. Agent (step-3.7-flash + 视觉上下文)
     const reply = await processUserInput(openaiClient, sid, userText, API_OK);
+    console.log(`[HTTP-ASR] Agent 回复: "${reply.substring(0, 50)}"`);
+
     EventBus.emit('assistant_reply', { sessionId: sid, text: reply, timestamp: Date.now() });
+    console.log(`[HTTP-ASR] assistant_reply 已发送`);
 
     // 3. TTS
     try {
