@@ -21,16 +21,13 @@ void main() async {
       
       final cameras = await availableCameras();
       
+      final cameraManager = CameraManager();
+      await cameraManager.initialize(cameras);
+      
       runApp(
         MultiProvider(
           providers: [
-            ChangeNotifierProvider(
-              create: (_) {
-                final manager = CameraManager();
-                manager.initialize(cameras);
-                return manager;
-              },
-            ),
+            ChangeNotifierProvider.value(value: cameraManager),
             Provider<TtsService>(
               create: (_) => createTtsService(),
               dispose: (_, service) => service.dispose(),

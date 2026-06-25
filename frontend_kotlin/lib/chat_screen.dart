@@ -44,6 +44,9 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _isTtsSpeaking = false;
   int _recordingId = 0;
 
+  ImageTransmissionConfig _imageTransmissionConfig = ImageTransmissionConfig();
+  Timer? _fixedFrameTimer;
+
   String _pendingSpeechText = '';
   String _confirmedSpeechText = ''; // 已确认的文本（一句话结束后累加）
   final List<ChatMessage> _messages = [];
@@ -73,6 +76,9 @@ class _ChatScreenState extends State<ChatScreen> {
       // 加载语音配置并设置到语音服务
       await _loadSpeechConfig();
       
+      // 加载图像传输配置
+      await _loadImageTransmissionConfig();
+      
       _subscribeToCommands();
       _subscribeToMessages();
       await _connectToServer();
@@ -97,6 +103,30 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     } catch (e) {
       Logger.e('ChatScreen', '加载语音配置失败', e);
+    }
+  }
+
+  Future<void> _loadImageTransmissionConfig() async {
+    try {
+      _imageTransmissionConfig = await _configService.getImageTransmissionConfig();
+      Logger.i('ChatScreen', '[自动发送图像] 配置已加载: ${_imageTransmissionConfig.modeLabel}, sendInterval=${_imageTransmissionConfig.sendInterval}s');
+    } catch (e) {
+      Logger.e('ChatScreen', '加载图像传输配置失败', e);
+    }
+  }
+
+  Future<void> _reloadImageTransmissionConfig() async {
+    try {
+      final oldConfig = _imageTransmissionConfig;
+      _imageTransmissionConfig = await _configService.getImageTransmissionConfig();
+      Logger.i('ChatScreen', '[自动发送图像] 配置已刷新: ${_imageTransmissionConfig.modeLabel}, sendInterval=${_imageTransmissionConfig.sendInterval}s (旧: ${oldConfig.modeLabel})');
+
+      if (_isAutoSendImage) {
+        _stopFixedFrameTimer();
+        _startFixedFrameTimerIfNeeded();
+      }
+    } catch (e) {
+      Logger.e('ChatScreen', '刷新图像传输配置失败', e);
     }
   }
   
@@ -251,6 +281,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _commandSubscription?.cancel();
     _messageSubscription?.cancel();
     _asrSubscription?.cancel();
+    _stopFixedFrameTimer();
     super.dispose();
   }
 
@@ -305,14 +336,21 @@ class _ChatScreenState extends State<ChatScreen> {
           });
           Logger.d('ChatScreen', 'UI已更新识别结果: "$_pendingSpeechText"');
           
-          // 自动发送图像：句子开始时（第一个SLICE）发一帧，句子结束时（SEGMENT）重置标记
-          final cameraManager = context.read<CameraManager>();
-          if (_isAutoSendImage && !isFinal && !cameraManager.imageSentForCurrentSentence) {
-            Logger.d('ChatScreen', '[自动发送图像] 新句子第一帧SLICE，捕获图像');
-            cameraManager.markImageSent();
-            _captureAndSendFrame();
-          } else if (isFinal) {
-            cameraManager.resetImageSentFlag();
+          // 自动发送图像：语音触发模式下，句子开始时（第一个SLICE）发一帧
+          // 句子结束时（SEGMENT）重置标记；如果同时开启定时发送，则重置定时器
+          if (_imageTransmissionConfig.speechTriggerEnabled) {
+            final cameraManager = context.read<CameraManager>();
+            if (_isAutoSendImage && !isFinal && !cameraManager.imageSentForCurrentSentence) {
+              Logger.d('ChatScreen', '[自动发送图像] 语音触发: 新句子第一帧SLICE，捕获图像');
+              cameraManager.markImageSent();
+              _captureAndSendFrame();
+              if (_imageTransmissionConfig.fixedIntervalEnabled) {
+                Logger.d('ChatScreen', '[自动发送图像] 语音触发后重置定时器');
+                _resetFixedFrameTimer();
+              }
+            } else if (isFinal) {
+              cameraManager.resetImageSentFlag();
+            }
           }
           
           if (_isAutoSendSpeech && isFinal && _pendingSpeechText.trim().isNotEmpty) {
@@ -389,20 +427,94 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() {
       _isAutoSendImage = !_isAutoSendImage;
     });
-    Logger.i('ChatScreen', '[自动发送图像] 开关: $_isAutoSendImage');
+    Logger.i('ChatScreen', '[自动发送图像] 开关: $_isAutoSendImage, ${_imageTransmissionConfig.modeLabel}, sendInterval=${_imageTransmissionConfig.sendInterval}s');
+
+    if (_isAutoSendImage) {
+      _startFixedFrameTimerIfNeeded();
+    } else {
+      _stopFixedFrameTimer();
+    }
+  }
+
+  void _startFixedFrameTimerIfNeeded() {
+    if (!_imageTransmissionConfig.fixedIntervalEnabled) {
+      Logger.d('ChatScreen', '[自动发送图像] 未启用定时发送，不启动定时器');
+      return;
+    }
+    _stopFixedFrameTimer();
+    final intervalMs = _imageTransmissionConfig.sendInterval * 1000;
+    Logger.i('ChatScreen', '[自动发送图像] 启动定时器, 间隔=${_imageTransmissionConfig.sendInterval}s (${intervalMs}ms), isCameraOn=${context.read<CameraManager>().isCameraOn}, controller=${context.read<CameraManager>().controller != null ? "存在" : "null"}');
+    _fixedFrameTimer = Timer.periodic(Duration(milliseconds: intervalMs), (_) {
+      Logger.d('ChatScreen', '[自动发送图像] Timer触发!');
+      _captureAndSendFrameForFixedRate();
+    });
+  }
+
+  void _stopFixedFrameTimer() {
+    if (_fixedFrameTimer != null) {
+      Logger.i('ChatScreen', '[自动发送图像] 停止定时器');
+      _fixedFrameTimer!.cancel();
+      _fixedFrameTimer = null;
+    }
+  }
+
+  void _resetFixedFrameTimer() {
+    if (_fixedFrameTimer != null && _imageTransmissionConfig.fixedIntervalEnabled) {
+      Logger.i('ChatScreen', '[自动发送图像] 重置定时器');
+      _stopFixedFrameTimer();
+      _startFixedFrameTimerIfNeeded();
+    }
+  }
+
+  Future<void> _captureAndSendFrameForFixedRate() async {
+    final manager = context.read<CameraManager>();
+    if (manager.controller == null) {
+      Logger.d('ChatScreen', '[自动发送图像] controller为null，跳过');
+      return;
+    }
+    if (!manager.isCameraOn) {
+      Logger.d('ChatScreen', '[自动发送图像] camera未开启，跳过');
+      return;
+    }
+    if (!_communicationService.isConnected) {
+      Logger.d('ChatScreen', '[自动发送图像] 未连接到服务器，跳过');
+      return;
+    }
+
+    try {
+      Logger.d('ChatScreen', '[自动发送图像] 开始捕获...');
+      final XFile file = await manager.controller!.takePicture();
+      final imageData = await file.readAsBytes();
+      await _communicationService.sendImage(imageData);
+      Logger.d('ChatScreen', '[自动发送图像] 发送成功, size=${imageData.length}bytes');
+    } catch (e) {
+      Logger.e('ChatScreen', '[自动发送图像] 捕获失败: $e');
+    }
   }
 
   Future<void> _captureAndSendFrame() async {
     final manager = context.read<CameraManager>();
-    if (manager.controller == null || !manager.isCameraOn) return;
-    if (!_communicationService.isConnected) return;
+    if (manager.controller == null) {
+      Logger.d('ChatScreen', '[自动发送图像] 按需捕获: controller为null，跳过');
+      return;
+    }
+    if (!manager.isCameraOn) {
+      Logger.d('ChatScreen', '[自动发送图像] 按需捕获: camera未开启，跳过');
+      return;
+    }
+    if (!_communicationService.isConnected) {
+      Logger.d('ChatScreen', '[自动发送图像] 按需捕获: 未连接到服务器，跳过');
+      return;
+    }
 
     try {
+      Logger.d('ChatScreen', '[自动发送图像] 按需捕获开始...');
       final XFile file = await manager.controller!.takePicture();
       final imageData = await file.readAsBytes();
       await _communicationService.sendImage(imageData);
+      Logger.d('ChatScreen', '[自动发送图像] 按需捕获发送成功, size=${imageData.length}bytes');
     } catch (e) {
-      Logger.e('ChatScreen', '[自动发送图像] 捕获失败: $e');
+      Logger.e('ChatScreen', '[自动发送图像] 按需捕获失败: $e');
     }
   }
   
@@ -446,7 +558,7 @@ class _ChatScreenState extends State<ChatScreen> {
       });
     }
 
-    if (_isAutoSendImage) {
+    if (_isAutoSendImage && _imageTransmissionConfig.speechTriggerEnabled) {
       await _captureAndSendFrame();
     }
   }
@@ -470,7 +582,7 @@ class _ChatScreenState extends State<ChatScreen> {
       });
     }
 
-    if (_isAutoSendImage) {
+    if (_isAutoSendImage && _imageTransmissionConfig.speechTriggerEnabled) {
       await _captureAndSendFrame();
     }
   }
@@ -507,7 +619,9 @@ class _ChatScreenState extends State<ChatScreen> {
             icon: Icon(_isAutoSendImage ? Icons.photo_camera : Icons.photo_camera_outlined),
             color: _isAutoSendImage ? Colors.orange : null,
             onPressed: _toggleAutoSendImage,
-            tooltip: _isAutoSendImage ? '关闭自动发送图像' : '开启自动发送图像(每秒1帧)',
+            tooltip: _isAutoSendImage
+                ? '关闭自动发送图像(${_imageTransmissionConfig.modeLabel})'
+                : '开启自动发送图像',
           ),
           IconButton(
             icon: Icon(_isMicOn ? Icons.mic : Icons.mic_off),
@@ -543,6 +657,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 Sidebar(
                   isOpen: _isSidebarOpen,
                   onToggle: _toggleSidebar,
+                  onConfigChanged: _reloadImageTransmissionConfig,
                 ),
               ],
             ),
@@ -636,7 +751,9 @@ class _ChatScreenState extends State<ChatScreen> {
                         IconButton(
                           icon: Icon(_isAutoSendImage ? Icons.photo_camera : Icons.photo_camera_outlined, color: _isAutoSendImage ? Colors.orange : Colors.white, size: 32),
                           onPressed: _toggleAutoSendImage,
-                          tooltip: _isAutoSendImage ? '关闭自动发送图像' : '开启自动发送图像(每秒1帧)',
+                          tooltip: _isAutoSendImage
+                              ? '关闭自动发送图像(${_imageTransmissionConfig.modeLabel})'
+                              : '开启自动发送图像',
                         ),
                         IconButton(
                           icon: Icon(_isMicOn ? Icons.mic : Icons.mic_off, color: _isMicOn ? Colors.red : Colors.white, size: 32),
@@ -883,6 +1000,7 @@ class ChatMessage {
 enum CameraTriggerType {
   manual,
   command,
+  fixedFrameRate,
 }
 
 class CameraLog {
@@ -913,6 +1031,8 @@ class CameraLog {
         return '手动触发';
       case CameraTriggerType.command:
         return '命令触发';
+      case CameraTriggerType.fixedFrameRate:
+        return '固定帧率';
     }
   }
   
