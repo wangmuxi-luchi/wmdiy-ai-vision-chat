@@ -8,7 +8,7 @@ const { SilenceDetector } = require('./cost_controller');
 
 const ASR_MODEL = process.env.ASR_MODEL || 'stepaudio-2.5-asr';
 const TTS_MODEL = process.env.TTS_MODEL || 'step-tts-mini';
-const TTS_VOICE = process.env.TTS_VOICE || 'cixingnansheng';
+const TTS_VOICE = process.env.TTS_VOICE || 'jingdiannvsheng'; // 经典女声
 
 const silenceDetectors = new Map();
 
