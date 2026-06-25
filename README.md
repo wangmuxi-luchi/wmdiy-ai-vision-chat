@@ -215,8 +215,8 @@ flutter pub get
 # 或在应用内侧边栏配置
 
 # 4. 运行（确保后端服务已启动）
-# Chrome 浏览器运行（推荐开发调试）
-flutter run -d chrome
+# Chrome 浏览器运行（推荐开发调试，固定端口避免配置丢失）
+flutter run -d chrome --web-port 8080
 
 # 或运行在已连接的 Android/iOS 设备上
 flutter run
@@ -234,7 +234,7 @@ npm start
 
 # 终端 2：启动前端（Chrome）
 cd wmdiy-ai-vision-chat/frontend_kotlin
-flutter run -d chrome
+flutter run -d chrome --web-port 8080
 ```
 
 ### 配置说明
