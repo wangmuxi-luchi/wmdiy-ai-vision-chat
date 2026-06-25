@@ -125,7 +125,7 @@ function handleMsg(msg) {
       break;
     case 'user_message':
       addMsg('user', msg.text);
-      // 显示语音识别结果
+      E.typingDots.classList.remove('hidden'); // 显示 AI 思考中
       break;
     case 'assistant_message':
       E.typingDots.classList.add('hidden');
