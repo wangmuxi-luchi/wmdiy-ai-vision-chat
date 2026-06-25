@@ -45,6 +45,7 @@ class _ChatScreenState extends State<ChatScreen> {
   int _recordingId = 0;
 
   ImageTransmissionConfig _imageTransmissionConfig = ImageTransmissionConfig();
+  TtsConfig _ttsConfig = TtsConfig();
   Timer? _fixedFrameTimer;
 
   String _pendingSpeechText = '';
@@ -78,6 +79,7 @@ class _ChatScreenState extends State<ChatScreen> {
       
       // 加载图像传输配置
       await _loadImageTransmissionConfig();
+      await _loadTtsConfig();
       
       _subscribeToCommands();
       _subscribeToMessages();
@@ -112,6 +114,15 @@ class _ChatScreenState extends State<ChatScreen> {
       Logger.i('ChatScreen', '[自动发送图像] 配置已加载: ${_imageTransmissionConfig.modeLabel}, sendInterval=${_imageTransmissionConfig.sendInterval}s');
     } catch (e) {
       Logger.e('ChatScreen', '加载图像传输配置失败', e);
+    }
+  }
+
+  Future<void> _loadTtsConfig() async {
+    try {
+      _ttsConfig = await _configService.getTtsConfig();
+      Logger.i('ChatScreen', '[TTS] 配置已加载: speechRate=${_ttsConfig.speechRate}x');
+    } catch (e) {
+      Logger.e('ChatScreen', '加载朗读配置失败', e);
     }
   }
 
@@ -179,8 +190,9 @@ class _ChatScreenState extends State<ChatScreen> {
             }
 
             _isTtsSpeaking = true;
-            Logger.d('ChatScreen', '[TTS] 开始朗读...');
-            await tts.speak(message);
+            final currentRate = (await _configService.getTtsConfig()).speechRate;
+            Logger.d('ChatScreen', '[TTS] 开始朗读... rate=${currentRate}x');
+            await tts.speak(message, rate: currentRate);
             _isTtsSpeaking = false;
 
             if (wasMicOn && _isTtsEnabled && mounted) {

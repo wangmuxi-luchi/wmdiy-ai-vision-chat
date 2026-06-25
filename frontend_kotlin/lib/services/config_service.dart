@@ -6,6 +6,7 @@ class ConfigService {
   static const String _speechConfigKey = 'speech_config';
   static const String _backendConfigKey = 'backend_config';
   static const String _imageTransmissionConfigKey = 'image_transmission_config';
+  static const String _ttsConfigKey = 'tts_config';
   
   static SharedPreferences? _instance;
 
@@ -122,6 +123,35 @@ class ConfigService {
   Future<void> clearImageTransmissionConfig() async {
     final prefs = await _getInstance();
     await prefs.remove(_imageTransmissionConfigKey);
+  }
+
+  Future<TtsConfig> getTtsConfig() async {
+    final prefs = await _getInstance();
+    final String? jsonString = prefs.getString(_ttsConfigKey);
+    if (jsonString != null) {
+      try {
+        final Map<String, dynamic> json = jsonDecode(jsonString);
+        return TtsConfig.fromJson(json);
+      } catch (e) {
+        // 解析失败，使用默认配置
+      }
+    }
+    return _getDefaultTtsConfig();
+  }
+
+  TtsConfig _getDefaultTtsConfig() {
+    return TtsConfig(speechRate: 1.0);
+  }
+
+  Future<void> saveTtsConfig(TtsConfig config) async {
+    final prefs = await _getInstance();
+    final String jsonString = jsonEncode(config.toJson());
+    await prefs.setString(_ttsConfigKey, jsonString);
+  }
+
+  Future<void> clearTtsConfig() async {
+    final prefs = await _getInstance();
+    await prefs.remove(_ttsConfigKey);
   }
 }
 
@@ -243,5 +273,25 @@ class ImageTransmissionConfig {
       return '定时发送';
     }
     return '未启用';
+  }
+}
+
+class TtsConfig {
+  double speechRate;
+
+  TtsConfig({
+    this.speechRate = 1.0,
+  });
+
+  factory TtsConfig.fromJson(Map<String, dynamic> json) {
+    return TtsConfig(
+      speechRate: (json['speechRate'] as num?)?.toDouble() ?? 1.0,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'speechRate': speechRate,
+    };
   }
 }

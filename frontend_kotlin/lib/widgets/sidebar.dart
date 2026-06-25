@@ -4,6 +4,7 @@ import '../services/locator.dart';
 import 'speech_config_dialog.dart';
 import 'backend_config_dialog.dart';
 import 'image_transmission_config_dialog.dart';
+import 'tts_config_dialog.dart';
 
 class Sidebar extends StatefulWidget {
   final bool isOpen;
@@ -69,6 +70,13 @@ class _SidebarState extends State<Sidebar> {
     }
   }
 
+  Future<void> _openTtsConfig() async {
+    await showDialog(
+      context: context,
+      builder: (context) => const TtsConfigDialog(),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedContainer(
@@ -127,15 +135,9 @@ class _SidebarState extends State<Sidebar> {
                   onTap: _openImageTransmissionConfig,
                 ),
                 _buildSidebarItem(
-                  icon: Icons.settings,
-                  label: '系统设置',
-                  onTap: () {
-                    if (widget.isOpen) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('系统设置功能开发中')),
-                      );
-                    }
-                  },
+                  icon: Icons.volume_up,
+                  label: '朗读配置',
+                  onTap: _openTtsConfig,
                 ),
                 _buildSidebarItem(
                   icon: Icons.help,
