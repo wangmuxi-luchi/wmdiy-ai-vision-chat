@@ -269,29 +269,25 @@ API 模型：3 个  |  全部 HTTP 调用  |  WebSocket：1 条（客户端 ↔ 
 ## 第 10 页：技术架构 — 核心技术点
 
 ```
-【页面标题】五个核心技术突破
+【页面标题】四个核心技术突破
 
 【技术 1：自研音频管线】
-PCM RMS 静音检测 + 累积缓冲 → 800ms 静音判定用户说完
-HTTP ASR（stepaudio-2.5-asr）语音转文字
-不依赖实时 WebSocket，无断连重连问题，生产环境稳定运行
+PCM RMS 静音检测 → 累积缓冲 → 800ms 静音判定用户说完
+HTTP ASR 语音转文字 + HTTP TTS 语音合成
+不依赖实时 WebSocket，无断连重连，生产环境稳定
 
 【技术 2：多模态 Agent 编排】
-ASR 文字 + 摄像头画面融合 prompt → step-3.7-flash 一次推理
-step-3.7-flash：256K 上下文 + 原生图文理解 + 400 tokens/s 生成
+ASR 文字 + 摄像头画面 → 融合 prompt → step-3.7-flash 一次推理
+256K 上下文 + 原生图文理解 + 400 tokens/s 生成速度
 对话历史管理 + Token 预算控制，防止上下文溢出
 
 【技术 3：按需截图机制】
-语音开始（VAD 检测）触发一次截帧，平时不占用主线程
-canvas.toDataURL 异步生成 JPEG → WebSocket 发送 → 服务端 sharp 压缩
-彻底消除定时器对音频采集的干扰
+语音开始瞬间触发截帧，平时不占用主线程
+canvas.toDataURL → WebSocket → sharp 压缩 → vision API
+彻底消除定时器对音频采集的干扰，API 成本降低 70%
 
-【技术 4：语音合成】
-step-tts-mini HTTP 接口 → MP3 二进制 → WebSocket → 浏览器 AudioContext 播放
-队列顺序播放，无缝衔接，无重叠变声
-
-【技术 5：全链路 WebSocket + 云端部署】
-浏览器 ↔ 服务端：单条 WebSocket（JSON 文本 + Binary 音频同通道）
+【技术 4：全链路 WebSocket + 云端部署】
+浏览器 ↔ 服务端：单条 WebSocket，JSON + Binary 音频同通道
 服务端 ↔ AI：HTTP REST（OpenAI 兼容接口）
 腾讯云 + nginx 反向代理 + HTTPS + PM2 进程守护
 ```
