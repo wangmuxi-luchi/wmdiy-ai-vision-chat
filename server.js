@@ -90,6 +90,13 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 
 // sessionId → ws 映射（用于事件转发）
 const sessions = new Map();
+// sessionId → rtMgr 映射（用于语音触发视觉注入）
+const rtMgrs = new Map();
+
+// 帧分析间隔控制：最低 8 秒分析一次，避免占满 API 配额
+const FRAME_COOLDOWN = 8000; // 7.5 RPM，留余量给对话 API
+const lastFrameTime = new Map();
+const speechActive = new Map(); // 语音处理中暂停视觉注入
 
 wss.on('connection', (ws) => {
   const sid = `s_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
@@ -104,7 +111,7 @@ wss.on('connection', (ws) => {
   let rtMgr = null;
   if (API_OK) {
     getRealtimeSession(sid, STEPFUN_API_KEY)
-      .then(m => { rtMgr = m; console.log(`[Realtime] 就绪: ${sid}`); })
+      .then(m => { rtMgr = m; rtMgrs.set(sid, m); console.log(`[Realtime] 就绪: ${sid}`); })
       .catch(e => { 
         console.error(`[Realtime] 连接失败: ${sid}`, e.message); 
         console.warn(`[Realtime] 实时语音功能不可用，将进入演示模式`);
@@ -137,6 +144,9 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     sessions.delete(sid);
+    rtMgrs.delete(sid);
+    lastFrameTime.delete(sid);
+    speechActive.delete(sid);
     cleanupSession(sid);
     removeSceneMemory(sid);
     if (rtMgr) { rtMgr.disconnect(); removeRealtimeSession(sid); }
@@ -178,6 +188,15 @@ async function handleFrame(sid, b64, ws, rtMgr) {
     ws.send(JSON.stringify({ type: 'frame_analyzed', description: '[Demo] 画面', timestamp: Date.now() }));
     return;
   }
+
+  // 帧分析间隔控制：最低 8 秒一次
+  const now = Date.now();
+  const lastTime = lastFrameTime.get(sid) || 0;
+  if (now - lastTime < FRAME_COOLDOWN) return;
+  // 语音处理中不分析，避免占用 API 配额和带宽
+  if (speechActive.get(sid)) return;
+  lastFrameTime.set(sid, now);
+
   try {
     const buf = Buffer.from(b64, 'base64');
     const resized = await sharp(buf).resize(512, 512, { fit: 'inside' }).jpeg({ quality: 70 }).toBuffer();
@@ -205,11 +224,9 @@ async function handleFrame(sid, b64, ws, rtMgr) {
 
     // Phase 2: 更新 Scene Memory → 注入实时语音会话
     const sceneMem = getSceneMemory(sid);
-    if (sceneMem.hasSignificantChange(desc)) {
+    if (sceneMem.hasSignificantChange(desc) && rtMgr?.connected) {
       sceneMem.update(desc);
-      if (rtMgr?.connected) {
-        rtMgr.updateVisualContext(sceneMem.getContext());
-      }
+      rtMgr.updateVisualContext(sceneMem.getContext());
     }
   } catch (e) {
     console.error('[Frame] 分析失败:', e.message);
@@ -219,14 +236,12 @@ async function handleFrame(sid, b64, ws, rtMgr) {
 
 // ── 实时音频（二进制 WAV → 阶跃星辰 Realtime）──
 function handleAudioBinary(sid, wavBuffer, rtMgr, ws) {
-  if (!rtMgr?.connected) return;
+  if (!rtMgr?.connected) {
+    // 实时连接未就绪，音频丢弃
+    if (!rtMgr) console.log(`[Audio] rtMgr 未初始化: ${sid}`);
+    return;
+  }
   try {
-    // 存 .wav 方便调试回听
-    const fs = require('fs');
-    const tmp = `tmp/${sid}_${Date.now()}.wav`;
-    fs.mkdirSync('tmp', { recursive: true });
-    fs.writeFileSync(tmp, wavBuffer);
-    // 去 WAV 头取 PCM → 直喂阶跃星辰
     const pcm = extractPCMFromWAV(wavBuffer);
     if (pcm.length > 0) rtMgr.inputAudio(pcm);
   } catch (e) { console.error('[Audio]', e.message); }
@@ -262,6 +277,14 @@ EventBus.on('assistant_reply', (d) => {
 EventBus.on('speech_start', (d) => {
   const ws = sessions.get(d.sessionId);
   if (ws) ws.send(JSON.stringify({ type: 'speech_start', timestamp: Date.now() }));
+  speechActive.set(d.sessionId, true);
+});
+EventBus.on('assistant_reply', (d) => {
+  speechActive.set(d.sessionId, false); // AI 回复完成，恢复视觉注入
+});
+EventBus.on('ai_text_delta', (d) => {
+  const ws = sessions.get(d.sessionId);
+  if (ws) ws.send(JSON.stringify({ type: 'ai_text_delta', delta: d.delta }));
 });
 EventBus.on('ai_audio', (d) => {
   const ws = sessions.get(d.sessionId);

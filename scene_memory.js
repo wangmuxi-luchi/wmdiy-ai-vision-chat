@@ -33,15 +33,7 @@ class SceneMemory {
     if (!this.description || this.description === '尚未获取画面') {
       return '尚未获取画面信息。';
     }
-    // 组合当前 + 最近变化
-    let ctx = `当前画面：${this.description}`;
-    if (this.history.length > 1) {
-      const recent = this.history.slice(-3).filter(d => d !== this.description);
-      if (recent.length > 0) {
-        ctx += `\n最近画面变化：${recent.join('；')}`;
-      }
-    }
-    return ctx;
+    return this.description;
   }
 
   /**

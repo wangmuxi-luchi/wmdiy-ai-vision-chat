@@ -7,78 +7,105 @@ const { RealtimeClient, ServerEventType } = require('stepfun-realtime-api');
 const EventBus = require('./event_bus');
 
 const REALTIME_URL = 'wss://api.stepfun.com/v1/realtime';
-const MODEL = 'step-1o-audio'; // 稳定成熟的实时语音模型
+const MODEL = 'step-1o-audio'; // 实时语音
 
 class RealtimeManager {
   constructor(sessionId, apiKey) {
     this.sessionId = sessionId;
-    this.client = new RealtimeClient({
-      url: REALTIME_URL,
-      secret: apiKey,
-    });
+    this.apiKey = apiKey;
+    this.client = null;
     this.connected = false;
     this.audioBuffer = Buffer.alloc(0);
-    this.bufferThreshold = 8192 * 2; // 16KB PCM 缓冲区阈值
-    
-    // 捕获底层 WebSocket 错误，防止进程崩溃
-    this.client.on('error', (err) => {
-      console.error(`[Realtime] WebSocket 错误 ${sessionId}:`, err.message);
-      this.connected = false;
+    this.bufferThreshold = 8192 * 2;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 5;
+    this.reconnectDelay = 2000;
+    this.reconnectTimer = null;
+    this._eventHandlers = []; // 保存事件注册，重连后重新绑定
+  }
+
+  _createClient() {
+    const client = new RealtimeClient({
+      url: REALTIME_URL,
+      secret: this.apiKey,
     });
+    client.on('error', (err) => {
+      console.error(`[Realtime] WebSocket 错误 ${this.sessionId}:`, err.message);
+      const msg = err.message || '';
+      // 空闲超时/服务器错误 不重连（步-1o-audio 自动断开的正常行为）
+      if (msg.includes('too long without operation') || msg.includes('server error')) {
+        this.connected = false;
+        return;
+      }
+      if (this.connected && msg) {
+        this.connected = false;
+        this._scheduleReconnect();
+      }
+    });
+    return client;
   }
 
   async connect() {
+    // 已被移除的 session 不再连接
+    if (!sessions.has(this.sessionId)) return;
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     console.log(`[Realtime] 连接中... session=${this.sessionId}`);
-    
-    // 使用 Promise.race 来处理连接超时和错误
+    this.client = this._createClient();
+
     const connectPromise = new Promise((resolve, reject) => {
-      // 设置错误监听器
       const errorHandler = (err) => {
         console.error(`[Realtime] WebSocket 错误 ${this.sessionId}:`, err.message);
         this.connected = false;
         reject(err);
       };
-      
-      // 监听各种错误事件
+
       this.client.on('error', errorHandler);
       this.client.on('close', (code, reason) => {
         if (!this.connected) {
           errorHandler(new Error(`连接关闭: code=${code}, reason=${reason}`));
         }
       });
-      
-      // 执行连接
+
       this.client.connect(MODEL)
         .then(() => {
-          this.client.off('error', errorHandler);
           resolve();
         })
         .catch((err) => {
-          this.client.off('error', errorHandler);
           errorHandler(err);
         });
     });
-    
-    // 添加超时
+
     const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => {
-        reject(new Error('连接超时'));
-      }, 10000); // 10秒超时
+      setTimeout(() => reject(new Error('连接超时')), 10000);
     });
-    
+
     try {
       await Promise.race([connectPromise, timeoutPromise]);
     } catch (err) {
       console.error(`[Realtime] 连接失败 ${this.sessionId}:`, err.message);
+      this._scheduleReconnect();
       throw err;
     }
     console.log(`[Realtime] 已连接`);
+    this.connected = true;
+    this.reconnectAttempts = 0;
 
+    // 提前注册断线监听，防止 _setupSession 期间断开未捕获
+    this.client.on('close', (code, reason) => {
+      console.log(`[Realtime] 连接断开，准备重连... session=${this.sessionId}`);
+      this.connected = false;
+      this._scheduleReconnect();
+    });
+
+    await this._setupSession();
+  }
+
+  async _setupSession() {
     try {
       await this.client.updateSession({
       instructions: `你是AI视觉对话助手。你能通过摄像头看到用户，通过麦克风听到用户。
-用中文简洁自然地回应，像朋友聊天一样。2-4句话为宜。`,
-      turn_detection: { type: 'server_vad' },
+用中文简洁自然地回应，像朋友聊天一样。1-2句话，尽量简短。`,
+      turn_detection: { type: 'server_vad', silence_duration_ms: 200 },
       modalities: ['text', 'audio'],
       input_audio_format: 'pcm16',
       output_audio_format: 'pcm16',
@@ -109,7 +136,14 @@ class RealtimeManager {
       EventBus.emit('speech_stop', { sessionId: this.sessionId, timestamp: Date.now() });
     });
 
-    // --- AI 文本回复 ---
+    // --- AI 文本回复（流式）---
+    this.client.on(ServerEventType.ResponseAudioTranscriptDelta, (ev) => {
+      if (ev.delta) {
+        EventBus.emit('ai_text_delta', { sessionId: this.sessionId, delta: ev.delta });
+      }
+    });
+
+    // --- AI 文本回复（完成）---
     this.client.on(ServerEventType.ResponseAudioTranscriptDone, (ev) => {
       const text = ev.transcript || '';
       console.log(`[Realtime] AI说: "${text}"`);
@@ -119,7 +153,6 @@ class RealtimeManager {
     // --- AI 音频回复 ---
     this.client.on(ServerEventType.ResponseAudioDelta, (ev) => {
       if (ev.delta) {
-        // delta 是 base64 编码的 PCM 音频
         EventBus.emit('ai_audio', {
           sessionId: this.sessionId,
           audio: ev.delta,
@@ -138,8 +171,28 @@ class RealtimeManager {
       this.client.disconnect();
       throw err;
     }
+  }
 
-    this.connected = true;
+  _scheduleReconnect() {
+    if (!sessions.has(this.sessionId)) return; // 已被移除
+    if (this._reconnecting) return; // 防止重连竞态
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      console.error(`[Realtime] 重连失败：已达最大尝试次数 ${this.maxReconnectAttempts}`);
+      return;
+    }
+    this._reconnecting = true;
+    const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts), 30000);
+    this.reconnectAttempts++;
+    console.log(`[Realtime] 将在 ${delay}ms 后重连 (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+    this.reconnectTimer = setTimeout(async () => {
+      try {
+        await this.connect();
+        console.log(`[Realtime] 重连成功: ${this.sessionId}`);
+      } catch (err) {
+        console.error(`[Realtime] 重连失败:`, err.message);
+      }
+      this._reconnecting = false;
+    }, delay);
   }
 
   /**
@@ -163,11 +216,7 @@ class RealtimeManager {
    */
   async updateVisualContext(context) {
     if (!this.connected) return;
-    const instructions = `你是AI视觉对话助手。你能通过摄像头看到用户，通过麦克风听到用户。
-用中文简洁自然地回应，像朋友聊天一样。2-4句话为宜。
-如果用户问"看到什么"、"这是什么"等视觉相关问题，请根据画面信息回答。
-
-${context}`;
+    const instructions = `你是AI视觉对话助手。你能看到用户：${context}。用中文简洁回复，1-2句话。`;
 
     try {
       await this.client.updateSession({ instructions });
@@ -186,13 +235,19 @@ ${context}`;
   }
 }
 
-// 会话管理
+// 会话管理（step-1o-audio 限制 1 个并发连接，同一时刻只保留最新会话）
 const sessions = new Map();
 
 async function getRealtimeSession(sessionId, apiKey) {
-  if (sessions.has(sessionId)) {
-    return sessions.get(sessionId);
+  // 断开所有旧会话（step-1o-audio 只允许一个并发连接）
+  for (const [sid, mgr] of sessions) {
+    if (sid !== sessionId) {
+      console.log(`[Realtime] 关闭旧会话: ${sid}`);
+      mgr._reconnecting = false; // 阻止重连
+      mgr.disconnect();
+    }
   }
+  sessions.clear();
 
   const mgr = new RealtimeManager(sessionId, apiKey);
   try {
@@ -209,6 +264,7 @@ async function getRealtimeSession(sessionId, apiKey) {
 function removeRealtimeSession(sessionId) {
   const mgr = sessions.get(sessionId);
   if (mgr) {
+    mgr._reconnecting = false;
     mgr.disconnect();
     sessions.delete(sessionId);
   }

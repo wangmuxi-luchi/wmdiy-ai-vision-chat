@@ -56,7 +56,7 @@ body {
 
 /* 全屏摄像头 */
 .cam-bg { position:absolute; inset:0; background:#000; overflow:hidden; }
-.cam-bg video { width:100%; height:100%; object-fit:cover; }
+.cam-bg video { width:100%; height:100%; object-fit:cover; transform:scaleX(-1); }
 
 /* 画面描述 */
 .vision-bar {

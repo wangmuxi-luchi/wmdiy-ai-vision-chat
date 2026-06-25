@@ -118,22 +118,61 @@ function send(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
 
+let pendingAiMsg = null;
+let pendingUserText = null;
+let ignoringOld = false; // 插话时忽略旧 AI 消息
+
 function handleMsg(msg) {
   switch (msg.type) {
     case 'connected':
       updateConn('on', '在线');
       break;
+    case 'speech_start':
+      if (pendingAiMsg) {
+        pendingAiMsg.remove();
+        pendingAiMsg = null;
+      }
+      ignoringOld = true;
+      captureFrame(); // VAD 检测到语音立刻截帧，与 ASR 并行
+      break;
     case 'user_message':
-      addMsg('user', msg.text);
-      E.typingDots.classList.remove('hidden'); // 显示 AI 思考中
+      ignoringOld = false;
+      if (pendingAiMsg) {
+        pendingUserText = msg.text;
+      } else {
+        addMsg('user', msg.text);
+        E.typingDots.classList.remove('hidden');
+      }
+      break;
+    case 'ai_text_delta':
+      if (ignoringOld) break;
+      E.typingDots.classList.add('hidden');
+      if (!pendingAiMsg) {
+        pendingAiMsg = addMsg('ai', msg.delta);
+      } else {
+        pendingAiMsg.textContent += msg.delta;
+        scrollChat();
+      }
       break;
     case 'assistant_message':
+      if (ignoringOld) break;
       E.typingDots.classList.add('hidden');
-      addMsg('ai', msg.text);
+      if (pendingAiMsg) {
+        pendingAiMsg.textContent = msg.text;
+        pendingAiMsg = null;
+      } else {
+        addMsg('ai', msg.text);
+      }
+      if (pendingUserText) {
+        addMsg('user', pendingUserText);
+        pendingUserText = null;
+        E.typingDots.classList.remove('hidden');
+      }
       break;
     case 'frame_analyzed':
-      E.visionBar.classList.remove('hidden');
-      E.visionBar.textContent = msg.description;
+      break;
+    case 'command':
+      if (msg.data === 'capture_frame') captureFrame();
       break;
   }
 }
@@ -217,10 +256,10 @@ function initAudioMeter(stream) {
     source.connect(scriptProcessor);
     scriptProcessor.connect(audioCtx.destination); // 需要连接才能触发
 
-    // 每 0.5 秒截取，静音跳过
-    const SILENCE_RMS = 0.003; // 静音阈值
+    // 每 300ms 截取，缩短话音传输延迟
+    const SILENCE_RMS = 0.002; // 静音阈值
     wavInterval = setInterval(() => {
-      if (micMuted || !connected || pcmSamples.length < 2400) {
+      if (micMuted || !connected || pcmSamples.length < 1200) {
         pcmSamples = [];
         return;
       }
@@ -235,7 +274,7 @@ function initAudioMeter(stream) {
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(new Uint8Array(wavBuffer).buffer);
       }
-    }, 500);
+    }, 300);
 
     const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
@@ -274,24 +313,20 @@ function initAudioMeter(stream) {
 
 // ==================== Camera ====================
 
-function startFrameCapture() {
-  if (!cameraStream || !connected || frameTimer) return;
-  const ctx = E.camCanvas.getContext('2d');
-  frameTimer = setInterval(() => {
-    if (!cameraStream || !connected) return;
-    try {
-      E.camCanvas.width = E.camVideo.videoWidth || 640;
-      E.camCanvas.height = E.camVideo.videoHeight || 480;
-      ctx.drawImage(E.camVideo, 0, 0);
-      const b64 = E.camCanvas.toDataURL('image/jpeg', 0.7).split(',')[1];
-      send({ type: 'frame', data: b64 });
-    } catch { /* */ }
-  }, 1000);
+function captureFrame() {
+  if (!cameraStream || !connected) return;
+  try {
+    const ctx = E.camCanvas.getContext('2d');
+    E.camCanvas.width = 320;
+    E.camCanvas.height = 240;
+    ctx.drawImage(E.camVideo, 0, 0, 320, 240);
+    const b64 = E.camCanvas.toDataURL('image/jpeg', 0.5).split(',')[1];
+    send({ type: 'frame', data: b64 });
+  } catch { /* */ }
 }
 
-function stopFrameCapture() {
-  if (frameTimer) { clearInterval(frameTimer); frameTimer = null; }
-}
+function startFrameCapture() {}  // 按需截图，不定时
+function stopFrameCapture() {}
 
 async function toggleCamera() {
   if (cameraStream) {
@@ -335,7 +370,13 @@ let audioQueue = [];
 let audioPlaying = false;
 
 async function playTTS(blob) {
-  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  // 恢复挂起的 AudioContext（浏览器切后台/静默会挂起）
+  if (audioCtx.state === 'suspended') {
+    await audioCtx.resume();
+  }
   try {
     const buf = await audioCtx.decodeAudioData(await blob.arrayBuffer());
     audioQueue.push(buf);
@@ -372,6 +413,7 @@ function addMsg(role, text) {
   E.msgList.appendChild(div);
   while (E.msgList.children.length > 40) E.msgList.firstChild.remove();
   scrollChat();
+  return div;
 }
 
 function scrollChat() {
