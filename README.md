@@ -215,10 +215,26 @@ flutter pub get
 # 或在应用内侧边栏配置
 
 # 4. 运行（确保后端服务已启动）
+# Chrome 浏览器运行（推荐开发调试）
+flutter run -d chrome
+
+# 或运行在已连接的 Android/iOS 设备上
 flutter run
 
 # 5. 构建 APK
 flutter build apk --release
+```
+
+#### 前后端同时启动（需要两个终端）
+
+```bash
+# 终端 1：启动后端
+cd wmdiy-ai-vision-chat
+npm start
+
+# 终端 2：启动前端（Chrome）
+cd wmdiy-ai-vision-chat/frontend_kotlin
+flutter run -d chrome
 ```
 
 ### 配置说明
