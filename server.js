@@ -33,6 +33,26 @@ const sharp = require('sharp');
 const EventBus = require('./event_bus');
 const { getRealtimeSession, removeRealtimeSession, extractPCMFromWAV } = require('./realtime_handler');
 const { processUserInput, updateFrameDescription, cleanupSession } = require('./agent_orchestrator');
+const { getSceneMemory, removeSceneMemory } = require('./scene_memory');
+
+// PCM → WAV 编码（供 TTS 播放）
+function pcmToWav(pcm, sampleRate) {
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
 
 const PORT = parseInt(process.env.PORT || '8000', 10);
 const STEPFUN_API_KEY = process.env.STEPFUN_API_KEY || '';
@@ -118,6 +138,7 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     sessions.delete(sid);
     cleanupSession(sid);
+    removeSceneMemory(sid);
     if (rtMgr) { rtMgr.disconnect(); removeRealtimeSession(sid); }
     EventBus.emit('session_disconnected', { sessionId: sid, timestamp: Date.now() });
     console.log(`[WS] 断开: ${sid}`);
@@ -133,7 +154,7 @@ async function handleJsonMessage(msg, sid, ws, rtMgr) {
         break;
       case 'frame':
         console.log(`[Frame] 收到图像数据: ${sid} | Base64长度: ${msg.data?.length || 0}`);
-        await handleFrame(sid, msg.data, ws);
+        await handleFrame(sid, msg.data, ws, rtMgr);
         break;
       case 'audio':
         console.log(`[Audio] 收到音频数据: ${sid} | Base64长度: ${msg.data?.length || 0}`);
@@ -152,7 +173,7 @@ async function handleJsonMessage(msg, sid, ws, rtMgr) {
 }
 
 // ── 帧分析 ──
-async function handleFrame(sid, b64, ws) {
+async function handleFrame(sid, b64, ws, rtMgr) {
   if (!API_OK) {
     ws.send(JSON.stringify({ type: 'frame_analyzed', description: '[Demo] 画面', timestamp: Date.now() }));
     return;
@@ -181,10 +202,18 @@ async function handleFrame(sid, b64, ws) {
     updateFrameDescription(sid, desc);
     ws.send(JSON.stringify({ type: 'frame_analyzed', description: desc, timestamp: Date.now() }));
     EventBus.emit('frame_analyzed', { sessionId: sid, description: desc, timestamp: Date.now() });
-  } catch (e) { 
-    console.error('[Frame] 分析失败:', e.message); 
-    const response = '分析失败: ' + e.message;
-    ws.send(JSON.stringify({ type: 'frame_analyzed', description: response, timestamp: Date.now() }));
+
+    // Phase 2: 更新 Scene Memory → 注入实时语音会话
+    const sceneMem = getSceneMemory(sid);
+    if (sceneMem.hasSignificantChange(desc)) {
+      sceneMem.update(desc);
+      if (rtMgr?.connected) {
+        rtMgr.updateVisualContext(sceneMem.getContext());
+      }
+    }
+  } catch (e) {
+    console.error('[Frame] 分析失败:', e.message);
+    // 不发送错误信息到前端，静默跳过
   }
 }
 
@@ -236,7 +265,12 @@ EventBus.on('speech_start', (d) => {
 });
 EventBus.on('ai_audio', (d) => {
   const ws = sessions.get(d.sessionId);
-  if (ws) ws.send(JSON.stringify({ type: 'audio_output', audio: d.audio, timestamp: Date.now() }));
+  if (ws && ws.readyState === 1) {
+    // PCM base64 → WAV buffer → 二进制帧（浏览器直接播放）
+    const pcm = Buffer.from(d.audio, 'base64');
+    const wav = pcmToWav(pcm, 24000);
+    ws.send(wav);
+  }
 });
 
 // ── SSE ──

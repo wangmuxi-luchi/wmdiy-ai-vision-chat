@@ -331,12 +331,15 @@ function toggleMic() {
 
 // ==================== TTS ====================
 
+let audioQueue = [];
+let audioPlaying = false;
+
 async function playTTS(blob) {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   try {
-    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const buf = await audioCtx.decodeAudioData(await blob.arrayBuffer());
-    const src = audioCtx.createBufferSource();
-    src.buffer = buf; src.connect(audioCtx.destination); src.start();
+    audioQueue.push(buf);
+    if (!audioPlaying) playNextInQueue();
   } catch {
     try {
       const url = URL.createObjectURL(blob);
@@ -344,6 +347,20 @@ async function playTTS(blob) {
       a.onended = () => URL.revokeObjectURL(url);
     } catch { /* */ }
   }
+}
+
+function playNextInQueue() {
+  if (audioQueue.length === 0) {
+    audioPlaying = false;
+    return;
+  }
+  audioPlaying = true;
+  const buf = audioQueue.shift();
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  src.connect(audioCtx.destination);
+  src.onended = playNextInQueue;
+  src.start();
 }
 
 // ==================== Chat UI ====================

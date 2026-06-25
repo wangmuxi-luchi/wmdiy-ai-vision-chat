@@ -156,6 +156,27 @@ class RealtimeManager {
     }
   }
 
+  /**
+   * 更新视觉上下文到实时语音会话
+   * 模型在下一轮对话中会参考注入的画面信息
+   * @param {string} context - 视觉上下文文本
+   */
+  async updateVisualContext(context) {
+    if (!this.connected) return;
+    const instructions = `你是AI视觉对话助手。你能通过摄像头看到用户，通过麦克风听到用户。
+用中文简洁自然地回应，像朋友聊天一样。2-4句话为宜。
+如果用户问"看到什么"、"这是什么"等视觉相关问题，请根据画面信息回答。
+
+${context}`;
+
+    try {
+      await this.client.updateSession({ instructions });
+      console.log(`[Realtime] 视觉上下文已注入: ${context.substring(0, 60)}...`);
+    } catch (err) {
+      console.error(`[Realtime] 更新视觉上下文失败:`, err.message);
+    }
+  }
+
   disconnect() {
     if (this.client) {
       this.client.disconnect();
