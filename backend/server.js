@@ -341,8 +341,12 @@ async function processSpeech(sid, ws) {
 
   EventBus.emit('user_speech', { sessionId: sid, text: userText, timestamp: Date.now() });
 
-  // 确保画面描述就绪（用 scene_memory 缓存，不依赖正在进行的帧分析）
+  // 确保画面描述就绪，最多等 1 秒
   const sceneMem = getSceneMemory(sid);
+  for (let i = 0; i < 5; i++) {
+    if (sceneMem.description && sceneMem.description !== '尚未获取画面') break;
+    await new Promise(r => setTimeout(r, 200));
+  }
   if (sceneMem.description && sceneMem.description !== '尚未获取画面') {
     updateFrameDescription(sid, sceneMem.description);
   }
