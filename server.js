@@ -51,6 +51,28 @@ const sharp = require('sharp');
 const EventBus = require('./event_bus');
 const { getRealtimeSession, removeRealtimeSession, extractPCMFromWAV } = require('./realtime_handler');
 const { processUserInput, updateFrameDescription, cleanupSession } = require('./agent_orchestrator');
+const { getSceneMemory, removeSceneMemory } = require('./scene_memory');
+const { transcribeAudio, synthesizeSpeech } = require('./audio_processor');
+const { SilenceDetector } = require('./cost_controller');
+
+// PCM → WAV 编码（供 TTS 播放）
+function pcmToWav(pcm, sampleRate) {
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
 
 const VISION_MODEL = process.env.VISION_MODEL || 'step-3.7-flash';
 
@@ -106,6 +128,13 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 
 // sessionId → ws 映射（用于事件转发）
 const sessions = new Map();
+// sessionId → rtMgr 映射（用于语音触发视觉注入）
+const rtMgrs = new Map();
+
+// 帧分析间隔控制：最低 8 秒分析一次，避免占满 API 配额
+const FRAME_COOLDOWN = 8000; // 7.5 RPM，留余量给对话 API
+const lastFrameTime = new Map();
+const speechActive = new Map(); // 语音处理中暂停视觉注入
 
 wss.on('connection', (ws) => {
   const sid = `s_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
@@ -114,19 +143,12 @@ wss.on('connection', (ws) => {
   console.log(`[WS] 连接: ${sid}`);
 
   ws.send(JSON.stringify({ type: 'connected', session_id: sid, mode: API_OK ? 'full' : 'demo', timestamp: Date.now() }));
+  // 预热 vision API：连接时截一帧
+  ws.send(JSON.stringify({ type: 'command', data: 'capture_frame' }));
   EventBus.emit('session_connected', { sessionId: sid, timestamp: Date.now() });
 
-  // 初始化实时语音
+  // HTTP 音频管线，不需要实时 WebSocket
   let rtMgr = null;
-  if (API_OK) {
-    getRealtimeSession(sid, STEPFUN_API_KEY)
-      .then(m => { rtMgr = m; console.log(`[Realtime] 就绪: ${sid}`); })
-      .catch(e => { 
-        console.error(`[Realtime] 连接失败: ${sid}`, e.message); 
-        console.warn(`[Realtime] 实时语音功能不可用，将进入演示模式`);
-        rtMgr = null;
-      });
-  }
 
   ws.on('message', async (raw) => {
     // 先尝试解析 JSON（Flutter 的 web_socket_channel 可能以二进制帧发送文本消息）
@@ -153,8 +175,16 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     sessions.delete(sid);
+    rtMgrs.delete(sid);
+    lastFrameTime.delete(sid);
+    speechActive.delete(sid);
+    audioChunks.delete(sid);
+    audioSpeaking.delete(sid);
+    if (audioSilenceTimer.has(sid)) { clearTimeout(audioSilenceTimer.get(sid)); audioSilenceTimer.delete(sid); }
+    audioDetectors.delete(sid);
+    agentFailCount.delete(sid);
     cleanupSession(sid);
-    if (rtMgr) { rtMgr.disconnect(); removeRealtimeSession(sid); }
+    removeSceneMemory(sid);
     EventBus.emit('session_disconnected', { sessionId: sid, timestamp: Date.now() });
     console.log(`[WS] 断开: ${sid}`);
   });
@@ -169,7 +199,7 @@ async function handleJsonMessage(msg, sid, ws, rtMgr) {
         break;
       case 'frame':
         console.log(`[Frame] 收到图像数据: ${sid} | Base64长度: ${msg.data?.length || 0}`);
-        await handleFrame(sid, msg.data, ws);
+        await handleFrame(sid, msg.data, ws, rtMgr);
         break;
       case 'audio':
         console.log(`[Audio] 收到音频数据: ${sid} | Base64长度: ${msg.data?.length || 0}`);
@@ -188,11 +218,18 @@ async function handleJsonMessage(msg, sid, ws, rtMgr) {
 }
 
 // ── 帧分析 ──
-async function handleFrame(sid, b64, ws) {
+async function handleFrame(sid, b64, ws, rtMgr) {
   if (!API_OK) {
     ws.send(JSON.stringify({ type: 'frame_analyzed', description: '[Demo] 画面', timestamp: Date.now() }));
     return;
   }
+
+  // 帧分析间隔控制：最低 8 秒一次
+  const now = Date.now();
+  const lastTime = lastFrameTime.get(sid) || 0;
+  if (now - lastTime < FRAME_COOLDOWN) return;
+  lastFrameTime.set(sid, now);
+
   try {
     const buf = Buffer.from(b64, 'base64');
     const resized = await sharp(buf).resize(512, 512, { fit: 'inside' }).jpeg({ quality: 70 }).toBuffer();
@@ -220,26 +257,123 @@ async function handleFrame(sid, b64, ws) {
     updateFrameDescription(sid, desc);
     ws.send(JSON.stringify({ type: 'frame_analyzed', description: desc, timestamp: Date.now() }));
     EventBus.emit('frame_analyzed', { sessionId: sid, description: desc, timestamp: Date.now() });
-  } catch (e) { 
-    console.error('[Frame] 分析失败:', e.message); 
-    const response = '分析失败: ' + e.message;
-    ws.send(JSON.stringify({ type: 'frame_analyzed', description: response, timestamp: Date.now() }));
+
+    // Phase 2: 更新 Scene Memory → 注入实时语音会话
+    const sceneMem = getSceneMemory(sid);
+    if (sceneMem.hasSignificantChange(desc) && rtMgr?.connected) {
+      sceneMem.update(desc);
+      rtMgr.updateVisualContext(sceneMem.getContext());
+    }
+  } catch (e) {
+    console.error('[Frame] 分析失败:', e.message);
+    // 不发送错误信息到前端，静默跳过
   }
 }
 
 // ── 实时音频（二进制 WAV → 阶跃星辰 Realtime）──
-function handleAudioBinary(sid, wavBuffer, rtMgr, ws) {
-  if (!rtMgr?.connected) return;
+// ── HTTP 音频管线（替代不稳定的实时 WebSocket）──
+const audioChunks = new Map();      // sid → Buffer[] PCM 累积
+const audioSpeaking = new Map();    // sid → boolean
+const audioSilenceTimer = new Map(); // sid → setTimeout
+const audioDetectors = new Map();   // sid → SilenceDetector
+const agentFailCount = new Map();    // sid → 连续失败次数
+
+function getAudioDetector(sid) {
+  if (!audioDetectors.has(sid)) audioDetectors.set(sid, new SilenceDetector(800));
+  return audioDetectors.get(sid);
+}
+
+async function handleAudioBinary(sid, wavBuffer, rtMgr, ws) {
+  const pcm = extractPCMFromWAV(wavBuffer);
+  if (pcm.length === 0) return;
+
+  const detector = getAudioDetector(sid);
+  const { isSilence } = detector.detect(pcm);
+
+  if (!isSilence) {
+    // 语音：累积 PCM
+    if (!audioChunks.has(sid)) {
+      audioChunks.set(sid, []);
+      console.log(`[Audio] 检测到语音开始: ${sid}`);
+      EventBus.emit('speech_start', { sessionId: sid, timestamp: Date.now() });
+    }
+    audioChunks.get(sid).push(pcm);
+    audioSpeaking.set(sid, true);
+
+    // 清除静音定时器
+    if (audioSilenceTimer.has(sid)) {
+      clearTimeout(audioSilenceTimer.get(sid));
+      audioSilenceTimer.delete(sid);
+    }
+  } else if (audioSpeaking.get(sid) && audioChunks.has(sid)) {
+    // 静音：启动定时器，确认用户说完
+    if (!audioSilenceTimer.has(sid)) {
+      audioSilenceTimer.set(sid, setTimeout(() => {
+        processSpeech(sid, ws);
+      }, 350));
+    }
+  }
+}
+
+async function processSpeech(sid, ws) {
+  audioSilenceTimer.delete(sid);
+  audioSpeaking.set(sid, false);
+  const chunks = audioChunks.get(sid);
+  if (!chunks?.length) return;
+  audioChunks.delete(sid);
+
+  const pcm = Buffer.concat(chunks);
+  // 至少 0.5 秒音频才送 ASR（24kHz 16bit = 24000 bytes）
+  if (pcm.length < 24000) { console.log(`[HTTP-ASR] 音频太短: ${sid}, ${pcm.length} bytes，跳过`); return; }
+  const wav = pcmToWav(pcm, 24000);
+  console.log(`[HTTP-ASR] 处理语音: ${sid}, ${pcm.length} bytes`);
+
+  // 1. ASR
+  let userText;
   try {
-    // 存 .wav 方便调试回听
-    const fs = require('fs');
-    const tmp = `tmp/${sid}_${Date.now()}.wav`;
-    fs.mkdirSync('tmp', { recursive: true });
-    fs.writeFileSync(tmp, wavBuffer);
-    // 去 WAV 头取 PCM → 直喂阶跃星辰
-    const pcm = extractPCMFromWAV(wavBuffer);
-    if (pcm.length > 0) rtMgr.inputAudio(pcm);
-  } catch (e) { console.error('[Audio]', e.message); }
+    userText = await transcribeAudio(openaiClient, wav);
+  } catch (asrErr) {
+    console.error(`[HTTP-ASR] 识别失败:`, asrErr.message);
+    return; // 静默跳过，不显示错误
+  }
+  if (!userText?.trim()) { console.log(`[HTTP-ASR] 识别为空: ${sid}`); return; }
+  console.log(`[HTTP-ASR] 用户说: "${userText}"`);
+
+  EventBus.emit('user_speech', { sessionId: sid, text: userText, timestamp: Date.now() });
+
+  // 确保画面描述就绪（用 scene_memory 缓存，不依赖正在进行的帧分析）
+  const sceneMem = getSceneMemory(sid);
+  if (sceneMem.description && sceneMem.description !== '尚未获取画面') {
+    updateFrameDescription(sid, sceneMem.description);
+  }
+
+  // 2. Agent (step-3.7-flash + 视觉上下文)
+  let reply;
+  try {
+    reply = await processUserInput(openaiClient, sid, userText, API_OK);
+  } catch (agentErr) {
+    console.error(`[HTTP-ASR] Agent 失败:`, agentErr.message);
+    // 连续失败 3 次才提示用户
+    const fails = (agentFailCount.get(sid) || 0) + 1;
+    agentFailCount.set(sid, fails);
+    if (fails >= 3) {
+      EventBus.emit('assistant_reply', { sessionId: sid, text: '出了点问题，请稍后再试。', timestamp: Date.now() });
+      agentFailCount.set(sid, 0);
+    }
+    return;
+  }
+  console.log(`[HTTP-ASR] Agent 回复: "${reply.substring(0, 50)}"`);
+  agentFailCount.set(sid, 0); // 成功时重置失败计数
+  EventBus.emit('assistant_reply', { sessionId: sid, text: reply, timestamp: Date.now() });
+
+  // 3. TTS
+  try {
+    const mp3 = await synthesizeSpeech(openaiClient, reply);
+    ws.send(mp3);
+    console.log(`[HTTP-TTS] 语音发送完成: ${sid} (${mp3.length} bytes)`);
+  } catch (ttsErr) {
+    console.error(`[HTTP-TTS] 失败:`, ttsErr.message);
+  }
 }
 
 // ── 文字聊天 ──
@@ -272,10 +406,23 @@ EventBus.on('assistant_reply', (d) => {
 EventBus.on('speech_start', (d) => {
   const ws = sessions.get(d.sessionId);
   if (ws) ws.send(JSON.stringify({ type: 'speech_start', timestamp: Date.now() }));
+  speechActive.set(d.sessionId, true);
+});
+EventBus.on('assistant_reply', (d) => {
+  speechActive.set(d.sessionId, false); // AI 回复完成，恢复视觉注入
+});
+EventBus.on('ai_text_delta', (d) => {
+  const ws = sessions.get(d.sessionId);
+  if (ws) ws.send(JSON.stringify({ type: 'ai_text_delta', delta: d.delta }));
 });
 EventBus.on('ai_audio', (d) => {
   const ws = sessions.get(d.sessionId);
-  if (ws) ws.send(JSON.stringify({ type: 'audio_output', audio: d.audio, timestamp: Date.now() }));
+  if (ws && ws.readyState === 1) {
+    // PCM base64 → WAV buffer → 二进制帧（浏览器直接播放）
+    const pcm = Buffer.from(d.audio, 'base64');
+    const wav = pcmToWav(pcm, 24000);
+    ws.send(wav);
+  }
 });
 
 // ── SSE ──
