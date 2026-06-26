@@ -116,10 +116,10 @@ if (API_OK) {
 // ── Express ──
 const app = express();
 app.use((req, res, next) => { res.header('Access-Control-Allow-Origin', '*'); res.header('Access-Control-Allow-Headers', '*'); next(); });
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, '..', 'frontend', 'public')));
 app.get('/api/health', (_, res) => res.json({ status: 'ok', mode: API_OK ? 'full' : 'demo', timestamp: Date.now() }));
-app.get('/', (_, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
-app.get('/admin', (_, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
+app.get('/', (_, res) => res.sendFile(path.join(__dirname, '..', 'frontend', 'public', 'index.html')));
+app.get('/admin', (_, res) => res.sendFile(path.join(__dirname, '..', 'frontend', 'public', 'admin.html')));
 app.get('/api/admin/stream', sseHandler);
 
 // ── HTTP Server ──
