@@ -97,7 +97,7 @@ npm start                  # http://localhost:8000
 | **模型分离** | 视觉/文本可配置独立 API Key 和 Base URL，支持切换第三方模型 |
 | **按需截图** | 语音触发截图 + 连接预热，不持续占用主线程 |
 | **超时保护** | Vision API 30 秒超时自动放弃，不阻塞后续请求 |
-| **WebSocket 全链路** | JSON + Binary 音频同通道，nginx + HTTPS + PM2 |
+| **WebSocket + HTTP 混合通信** | 浏览器↔服务端 WebSocket，服务端↔AI HTTP REST |
 
 ---
 
