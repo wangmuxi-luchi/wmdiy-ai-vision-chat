@@ -320,6 +320,7 @@ class WebSocketCommunicationService implements CommunicationService {
 
   void _handleError(dynamic error) {
     Logger.e('WebSocket', '连接错误: $error');
+    _channel = null;
     _isChannelOpen = false;
     _isReconnecting = false;
     _onDisconnected();
@@ -327,6 +328,7 @@ class WebSocketCommunicationService implements CommunicationService {
 
   void _handleDone() {
     Logger.w('WebSocket', '连接断开');
+    _channel = null;
     _isChannelOpen = false;
     _onDisconnected();
   }
@@ -441,5 +443,13 @@ class WebSocketCommunicationService implements CommunicationService {
     if (_stateController.hasListener) {
       _stateController.add(state);
     }
+  }
+
+  void tryReconnect() {
+    Logger.i('WebSocket', '🔄 手动触发重连，重置计数器');
+    _reconnectAttempts = 0;
+    _currentDelay = _initialReconnectDelay;
+    _isReconnecting = false;
+    _scheduleReconnect();
   }
 }

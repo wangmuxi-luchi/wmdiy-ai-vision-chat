@@ -24,7 +24,7 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
+class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   late SpeechRecognitionService _speechService;
   late MessageReceiverService _messageReceiverService;
   late CommandReceiverService _commandReceiverService;
@@ -60,6 +60,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _initAsync();
   }
   
@@ -281,6 +282,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _inputController.dispose();
     _speechInputController.dispose();
     _scrollController.dispose();
@@ -295,6 +297,40 @@ class _ChatScreenState extends State<ChatScreen> {
     _asrSubscription?.cancel();
     _stopFixedFrameTimer();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    Logger.d('ChatScreen', '[生命周期] $state');
+    if (state == AppLifecycleState.resumed) {
+      _onAppResumed();
+    }
+  }
+
+  Future<void> _onAppResumed() async {
+    // 1. 恢复摄像头
+    if (mounted) {
+      final cameraManager = context.read<CameraManager>();
+      Logger.i('ChatScreen', '[生命周期] 应用恢复前台，重新初始化摄像头...');
+      await cameraManager.reinitialize();
+      Logger.i('ChatScreen', '[生命周期] 摄像头重新初始化完成');
+    }
+
+    // 2. 恢复 WebSocket
+    if (!_communicationService.isConnected) {
+      Logger.i('ChatScreen', '[生命周期] 应用恢复前台，检测到连接断开，尝试重连...');
+      try {
+        final connected = await _communicationService.connect();
+        if (connected) {
+          Logger.i('ChatScreen', '[生命周期] 重连成功');
+          _startMessageReceiver();
+        } else {
+          Logger.w('ChatScreen', '[生命周期] 重连失败');
+        }
+      } catch (e) {
+        Logger.e('ChatScreen', '[生命周期] 重连异常: $e');
+      }
+    }
   }
 
   Future<void> _toggleMic({bool? turnOn, bool skipRecording = false}) async {

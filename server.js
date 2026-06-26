@@ -4,12 +4,30 @@
 
 require('dotenv').config();
 
-// ── 过滤第三方库的调试日志 ──
+// ── 时间戳日志 ──
+const _ts = () => new Date().toISOString().replace('T', ' ').replace('Z', '');
+
 const _origConsoleLog = console.log;
+const _origConsoleError = console.error;
+const _origConsoleWarn = console.warn;
+const _origConsoleDebug = console.debug;
+
 console.log = function(...args) {
   const msg = String(args[0] || '');
   if (msg === 'proxy' || msg === 'STEP_API') return;
-  _origConsoleLog.apply(console, args);
+  _origConsoleLog.apply(console, [`[${_ts()}]`, ...args]);
+};
+
+console.error = function(...args) {
+  _origConsoleError.apply(console, [`[${_ts()}]`, ...args]);
+};
+
+console.warn = function(...args) {
+  _origConsoleWarn.apply(console, [`[${_ts()}]`, ...args]);
+};
+
+console.debug = function(...args) {
+  _origConsoleDebug.apply(console, [`[${_ts()}]`, ...args]);
 };
 
 // ── 全局异常处理 ──
@@ -34,9 +52,17 @@ const EventBus = require('./event_bus');
 const { getRealtimeSession, removeRealtimeSession, extractPCMFromWAV } = require('./realtime_handler');
 const { processUserInput, updateFrameDescription, cleanupSession } = require('./agent_orchestrator');
 
+const VISION_MODEL = process.env.VISION_MODEL || 'step-3.7-flash';
+
 const PORT = parseInt(process.env.PORT || '8000', 10);
 const STEPFUN_API_KEY = process.env.STEPFUN_API_KEY || '';
 const STEPFUN_BASE_URL = process.env.STEPFUN_BASE_URL || 'https://api.stepfun.com/v1';
+
+// 图像和文本可分别配置不同模型
+const VISION_API_KEY = process.env.VISION_API_KEY || STEPFUN_API_KEY;
+const VISION_BASE_URL = process.env.VISION_BASE_URL || STEPFUN_BASE_URL;
+const CHAT_API_KEY = process.env.CHAT_API_KEY || STEPFUN_API_KEY;
+const CHAT_BASE_URL = process.env.CHAT_BASE_URL || STEPFUN_BASE_URL;
 
 // 验证 API Key 是否有效
 const isValidApiKey = STEPFUN_API_KEY && 
@@ -48,9 +74,19 @@ const isValidApiKey = STEPFUN_API_KEY &&
 const API_OK = isValidApiKey;
 
 let openaiClient = null;
+let visionClient = null;
+let chatClient = null;
 if (API_OK) {
   openaiClient = new OpenAI({ apiKey: STEPFUN_API_KEY, baseURL: STEPFUN_BASE_URL });
+  visionClient = new OpenAI({ apiKey: VISION_API_KEY, baseURL: VISION_BASE_URL });
+  chatClient = new OpenAI({ apiKey: CHAT_API_KEY, baseURL: CHAT_BASE_URL });
   console.log('[Init] 阶跃星辰 API 就绪');
+  if (VISION_API_KEY !== STEPFUN_API_KEY || VISION_BASE_URL !== STEPFUN_BASE_URL) {
+    console.log('[Init] 图像模型独立配置: ' + VISION_BASE_URL);
+  }
+  if (CHAT_API_KEY !== STEPFUN_API_KEY || CHAT_BASE_URL !== STEPFUN_BASE_URL) {
+    console.log('[Init] 文本模型独立配置: ' + CHAT_BASE_URL);
+  }
 } else {
   console.warn('[Init] 演示模式');
 }
@@ -163,18 +199,21 @@ async function handleFrame(sid, b64, ws) {
     console.log(`[Frame] 图像压缩完成: ${sid} | 压缩后大小: ${resized.length} 字节`);
     
     const start = Date.now();
-    const r = await openaiClient.chat.completions.create({
-      model: 'step-3.7-flash',
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${resized.toString('base64')}` } },
-          { type: 'text', text: '简单描述画面内容，一句话即可。' },
-        ],
-      }],
-      max_tokens: 300,
-      reasoning_effort: 'low',
-    });
+    console.log(`[Frame] 开始调用视觉模型: ${sid} | 模型: ${VISION_MODEL}`);
+    const r = await Promise.race([
+      visionClient.chat.completions.create({
+        model: VISION_MODEL,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${resized.toString('base64')}` } },
+            { type: 'text', text: '简单描述画面内容，一句话即可。' },
+          ],
+        }],
+        max_tokens: 300,
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('视觉模型调用超时（30秒）')), 30000)),
+    ]);
     const elapsed = Date.now() - start;
     const desc = r.choices[0]?.message?.content || '分析中...';
     console.log(`[Frame] ${sid} 分析完成 (${elapsed}ms): ${desc.substring(0, 50)}`);
@@ -211,10 +250,10 @@ async function handleChat(sid, text, ws) {
   }
   
   console.log(`[Chat] 收到用户消息: ${sid} | 内容: "${text}"`);
-  console.log(`[Chat] openaiClient=${!!openaiClient}, API_OK=${API_OK}`);
+  console.log(`[Chat] chatClient=${!!chatClient}, API_OK=${API_OK}`);
   EventBus.emit('user_speech', { sessionId: sid, text, timestamp: Date.now() });
 
-  const reply = await processUserInput(openaiClient, sid, text, API_OK);
+  const reply = await processUserInput(chatClient, sid, text, API_OK);
   console.log(`[Chat] AI回复完成: ${sid} | 结果: "${reply.substring(0, 50)}"`);
 
   EventBus.emit('assistant_reply', { sessionId: sid, text: reply, timestamp: Date.now() });
