@@ -123,17 +123,21 @@ function handleMsg(msg) {
     case 'connected':
       updateConn('on', '在线');
       break;
+    case 'speech_start':
+      captureFrame();
+      break;
     case 'user_message':
       addMsg('user', msg.text);
-      // 显示语音识别结果
+      E.typingDots.classList.remove('hidden');
       break;
     case 'assistant_message':
       E.typingDots.classList.add('hidden');
       addMsg('ai', msg.text);
       break;
     case 'frame_analyzed':
-      E.visionBar.classList.remove('hidden');
-      E.visionBar.textContent = msg.description;
+      break;
+    case 'command':
+      if (msg.data === 'capture_frame') captureFrame();
       break;
   }
 }
@@ -217,10 +221,10 @@ function initAudioMeter(stream) {
     source.connect(scriptProcessor);
     scriptProcessor.connect(audioCtx.destination); // 需要连接才能触发
 
-    // 每 0.5 秒截取，静音跳过
-    const SILENCE_RMS = 0.003; // 静音阈值
+    // 每 300ms 截取，缩短话音传输延迟
+    const SILENCE_RMS = 0.002; // 静音阈值
     wavInterval = setInterval(() => {
-      if (micMuted || !connected || pcmSamples.length < 2400) {
+      if (micMuted || !connected || pcmSamples.length < 1200) {
         pcmSamples = [];
         return;
       }
@@ -235,7 +239,7 @@ function initAudioMeter(stream) {
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(new Uint8Array(wavBuffer).buffer);
       }
-    }, 500);
+    }, 250);
 
     const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
@@ -274,24 +278,20 @@ function initAudioMeter(stream) {
 
 // ==================== Camera ====================
 
-function startFrameCapture() {
-  if (!cameraStream || !connected || frameTimer) return;
-  const ctx = E.camCanvas.getContext('2d');
-  frameTimer = setInterval(() => {
-    if (!cameraStream || !connected) return;
-    try {
-      E.camCanvas.width = E.camVideo.videoWidth || 640;
-      E.camCanvas.height = E.camVideo.videoHeight || 480;
-      ctx.drawImage(E.camVideo, 0, 0);
-      const b64 = E.camCanvas.toDataURL('image/jpeg', 0.7).split(',')[1];
-      send({ type: 'frame', data: b64 });
-    } catch { /* */ }
-  }, 1000);
+function captureFrame() {
+  if (!cameraStream || !connected) return;
+  try {
+    const ctx = E.camCanvas.getContext('2d');
+    E.camCanvas.width = 320;
+    E.camCanvas.height = 240;
+    ctx.drawImage(E.camVideo, 0, 0, 320, 240);
+    const b64 = E.camCanvas.toDataURL('image/jpeg', 0.5).split(',')[1];
+    send({ type: 'frame', data: b64 });
+  } catch { /* */ }
 }
 
-function stopFrameCapture() {
-  if (frameTimer) { clearInterval(frameTimer); frameTimer = null; }
-}
+function startFrameCapture() {}  // 按需截图，不定时
+function stopFrameCapture() {}
 
 async function toggleCamera() {
   if (cameraStream) {
@@ -331,12 +331,21 @@ function toggleMic() {
 
 // ==================== TTS ====================
 
+let audioQueue = [];
+let audioPlaying = false;
+
 async function playTTS(blob) {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  // 恢复挂起的 AudioContext（浏览器切后台/静默会挂起）
+  if (audioCtx.state === 'suspended') {
+    await audioCtx.resume();
+  }
   try {
-    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const buf = await audioCtx.decodeAudioData(await blob.arrayBuffer());
-    const src = audioCtx.createBufferSource();
-    src.buffer = buf; src.connect(audioCtx.destination); src.start();
+    audioQueue.push(buf);
+    if (!audioPlaying) playNextInQueue();
   } catch {
     try {
       const url = URL.createObjectURL(blob);
@@ -344,6 +353,20 @@ async function playTTS(blob) {
       a.onended = () => URL.revokeObjectURL(url);
     } catch { /* */ }
   }
+}
+
+function playNextInQueue() {
+  if (audioQueue.length === 0) {
+    audioPlaying = false;
+    return;
+  }
+  audioPlaying = true;
+  const buf = audioQueue.shift();
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  src.connect(audioCtx.destination);
+  src.onended = playNextInQueue;
+  src.start();
 }
 
 // ==================== Chat UI ====================
@@ -355,6 +378,7 @@ function addMsg(role, text) {
   E.msgList.appendChild(div);
   while (E.msgList.children.length > 40) E.msgList.firstChild.remove();
   scrollChat();
+  return div;
 }
 
 function scrollChat() {

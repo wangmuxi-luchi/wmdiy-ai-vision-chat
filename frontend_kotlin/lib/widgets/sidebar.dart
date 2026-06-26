@@ -3,15 +3,19 @@ import '../services/config_service.dart';
 import '../services/locator.dart';
 import 'speech_config_dialog.dart';
 import 'backend_config_dialog.dart';
+import 'image_transmission_config_dialog.dart';
+import 'tts_config_dialog.dart';
 
 class Sidebar extends StatefulWidget {
   final bool isOpen;
   final VoidCallback onToggle;
+  final VoidCallback? onConfigChanged;
 
   const Sidebar({
     super.key,
     required this.isOpen,
     required this.onToggle,
+    this.onConfigChanged,
   });
 
   @override
@@ -54,6 +58,23 @@ class _SidebarState extends State<Sidebar> {
       builder: (context) => const BackendConfigDialog(),
     );
     await _checkConfigs();
+  }
+
+  Future<void> _openImageTransmissionConfig() async {
+    final result = await showDialog(
+      context: context,
+      builder: (context) => const ImageTransmissionConfigDialog(),
+    );
+    if (result == true) {
+      widget.onConfigChanged?.call();
+    }
+  }
+
+  Future<void> _openTtsConfig() async {
+    await showDialog(
+      context: context,
+      builder: (context) => const TtsConfigDialog(),
+    );
   }
 
   @override
@@ -109,15 +130,14 @@ class _SidebarState extends State<Sidebar> {
                   onTap: _openBackendConfig,
                 ),
                 _buildSidebarItem(
-                  icon: Icons.settings,
-                  label: '系统设置',
-                  onTap: () {
-                    if (widget.isOpen) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('系统设置功能开发中')),
-                      );
-                    }
-                  },
+                  icon: Icons.image,
+                  label: '图像传输配置',
+                  onTap: _openImageTransmissionConfig,
+                ),
+                _buildSidebarItem(
+                  icon: Icons.volume_up,
+                  label: '朗读配置',
+                  onTap: _openTtsConfig,
                 ),
                 _buildSidebarItem(
                   icon: Icons.help,

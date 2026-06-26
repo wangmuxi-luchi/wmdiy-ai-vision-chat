@@ -138,6 +138,14 @@ class CameraManager extends ChangeNotifier {
     _imageSentForCurrentSentence = true;
   }
 
+  Future<void> reinitialize() async {
+    Logger.d(_tag, 'reinitialize() - 重新初始化摄像头');
+    if (_cameras.isNotEmpty) {
+      await _resetController();
+    }
+    Logger.d(_tag, 'reinitialize() - 完成, controller: ${_controller != null ? '存在' : 'null'}');
+  }
+
   void resetImageSentFlag() {
     _imageSentForCurrentSentence = false;
   }

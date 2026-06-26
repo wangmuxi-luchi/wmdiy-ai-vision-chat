@@ -57,8 +57,13 @@ frontend_kotlin/windows/third_party/
 
 frontend_kotlin/web/third_party/tencentcloud-speech-sdk-js-main/asr/examples/config.js
 
-frontend/
+frontend/*
+!frontend/public/
 frontend_test/my_camera_app/
 frontend_test/tts_demo/
 
-.trae/
+.trae/CLAUDE.md
+路演面试准备.md
+计划.md
+PPT详细大纲.md
+CLAUDE.md

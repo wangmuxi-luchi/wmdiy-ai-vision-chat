@@ -276,14 +276,15 @@ function createWebSocketHandler(openaiClient, apiAvailable) {
       timestamp: Date.now(),
     });
 
-    if (apiAvailable && aiText) {
-      try {
-        const ttsBuffer = await synthesizeSpeech(openaiClient, aiText);
-        manager.sendBytes(sessionId, ttsBuffer);
-      } catch (ttsErr) {
-        console.error(`[TTS] 合成失败 ${sessionId}:`, ttsErr.message);
-      }
-    }
+    // 后端 TTS 已禁用，由前端浏览器 TTS 处理朗读
+    // if (apiAvailable && aiText) {
+    //   try {
+    //     const ttsBuffer = await synthesizeSpeech(openaiClient, aiText);
+    //     manager.sendBytes(sessionId, ttsBuffer);
+    //   } catch (ttsErr) {
+    //     console.error(`[TTS] 合成失败 ${sessionId}:`, ttsErr.message);
+    //   }
+    // }
   }
 
   return { manager, handleConnection };
