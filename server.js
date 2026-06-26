@@ -144,6 +144,7 @@ wss.on('connection', (ws) => {
     audioSpeaking.delete(sid);
     if (audioSilenceTimer.has(sid)) { clearTimeout(audioSilenceTimer.get(sid)); audioSilenceTimer.delete(sid); }
     audioDetectors.delete(sid);
+    agentFailCount.delete(sid);
     cleanupSession(sid);
     removeSceneMemory(sid);
     EventBus.emit('session_disconnected', { sessionId: sid, timestamp: Date.now() });
@@ -189,8 +190,6 @@ async function handleFrame(sid, b64, ws, rtMgr) {
   const now = Date.now();
   const lastTime = lastFrameTime.get(sid) || 0;
   if (now - lastTime < FRAME_COOLDOWN) return;
-  // 语音处理中不分析，避免占用 API 配额和带宽
-  if (speechActive.get(sid)) return;
   lastFrameTime.set(sid, now);
 
   try {
@@ -236,6 +235,7 @@ const audioChunks = new Map();      // sid → Buffer[] PCM 累积
 const audioSpeaking = new Map();    // sid → boolean
 const audioSilenceTimer = new Map(); // sid → setTimeout
 const audioDetectors = new Map();   // sid → SilenceDetector
+const agentFailCount = new Map();    // sid → 连续失败次数
 
 function getAudioDetector(sid) {
   if (!audioDetectors.has(sid)) audioDetectors.set(sid, new SilenceDetector(500));
@@ -269,7 +269,7 @@ async function handleAudioBinary(sid, wavBuffer, rtMgr, ws) {
     if (!audioSilenceTimer.has(sid)) {
       audioSilenceTimer.set(sid, setTimeout(() => {
         processSpeech(sid, ws);
-      }, 800));
+      }, 350));
     }
   }
 }
@@ -285,33 +285,45 @@ async function processSpeech(sid, ws) {
   const wav = pcmToWav(pcm, 24000);
   console.log(`[HTTP-ASR] 处理语音: ${sid}, ${pcm.length} bytes`);
 
+  // 1. ASR
+  let userText;
   try {
-    // 1. ASR
-    const userText = await transcribeAudio(openaiClient, wav);
-    if (!userText?.trim()) { console.log(`[HTTP-ASR] 识别为空: ${sid}`); return; }
-    console.log(`[HTTP-ASR] 用户说: "${userText}"`);
+    userText = await transcribeAudio(openaiClient, wav);
+  } catch (asrErr) {
+    console.error(`[HTTP-ASR] 识别失败:`, asrErr.message);
+    return; // 静默跳过，不显示错误
+  }
+  if (!userText?.trim()) { console.log(`[HTTP-ASR] 识别为空: ${sid}`); return; }
+  console.log(`[HTTP-ASR] 用户说: "${userText}"`);
 
-    EventBus.emit('user_speech', { sessionId: sid, text: userText, timestamp: Date.now() });
-    console.log(`[HTTP-ASR] user_speech 已发送`);
+  EventBus.emit('user_speech', { sessionId: sid, text: userText, timestamp: Date.now() });
 
-    // 2. Agent (step-3.7-flash + 视觉上下文)
-    const reply = await processUserInput(openaiClient, sid, userText, API_OK);
-    console.log(`[HTTP-ASR] Agent 回复: "${reply.substring(0, 50)}"`);
-
-    EventBus.emit('assistant_reply', { sessionId: sid, text: reply, timestamp: Date.now() });
-    console.log(`[HTTP-ASR] assistant_reply 已发送`);
-
-    // 3. TTS
-    try {
-      const mp3 = await synthesizeSpeech(openaiClient, reply);
-      ws.send(mp3);
-      console.log(`[HTTP-TTS] 语音发送完成: ${sid} (${mp3.length} bytes)`);
-    } catch (ttsErr) {
-      console.error(`[HTTP-TTS] 失败:`, ttsErr.message);
+  // 2. Agent (step-3.7-flash + 视觉上下文)
+  let reply;
+  try {
+    reply = await processUserInput(openaiClient, sid, userText, API_OK);
+  } catch (agentErr) {
+    console.error(`[HTTP-ASR] Agent 失败:`, agentErr.message);
+    // 连续失败 3 次才提示用户
+    const fails = (agentFailCount.get(sid) || 0) + 1;
+    agentFailCount.set(sid, fails);
+    if (fails >= 3) {
+      EventBus.emit('assistant_reply', { sessionId: sid, text: '出了点问题，请稍后再试。', timestamp: Date.now() });
+      agentFailCount.set(sid, 0);
     }
-  } catch (err) {
-    console.error(`[HTTP-ASR] 处理失败:`, err.message);
-    ws.send(JSON.stringify({ type: 'assistant_message', text: '抱歉，处理失败，请重试。', timestamp: Date.now() }));
+    return;
+  }
+  console.log(`[HTTP-ASR] Agent 回复: "${reply.substring(0, 50)}"`);
+  agentFailCount.set(sid, 0); // 成功时重置失败计数
+  EventBus.emit('assistant_reply', { sessionId: sid, text: reply, timestamp: Date.now() });
+
+  // 3. TTS
+  try {
+    const mp3 = await synthesizeSpeech(openaiClient, reply);
+    ws.send(mp3);
+    console.log(`[HTTP-TTS] 语音发送完成: ${sid} (${mp3.length} bytes)`);
+  } catch (ttsErr) {
+    console.error(`[HTTP-TTS] 失败:`, ttsErr.message);
   }
 }
 

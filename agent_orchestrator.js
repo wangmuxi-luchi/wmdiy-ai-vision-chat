@@ -36,6 +36,7 @@ function getSession(sessionId) {
       history: [{ role: 'system', content: SYSTEM_PROMPT }],
       budget: new ConversationBudget(MAX_TOKENS),
       frameDescription: '尚未获取画面',
+      budgetCheckCounter: 0,
     });
   }
   return sessions.get(sessionId);
@@ -63,9 +64,12 @@ async function processUserInput(client, sessionId, userText, apiAvailable) {
   const session = getSession(sessionId);
   const { history, budget, frameDescription } = session;
 
-  // Token 预算检查：超限时自动摘要
-  if (budget.needsSummarization()) {
-    await summarizeHistory(client, sessionId, apiAvailable);
+  // Token 预算检查：每 5 轮检查一次，超限直接截断不调 API
+  session.budgetCheckCounter++;
+  if (session.budgetCheckCounter >= 5 && budget.needsSummarization()) {
+    session.history = [history[0], ...history.slice(-6)];
+    budget.reset();
+    session.budgetCheckCounter = 0;
   }
 
   // Demo 模式：mock 回复
@@ -104,10 +108,10 @@ async function processUserInput(client, sessionId, userText, apiAvailable) {
     // 保持对话历史
     history.push({ role: 'assistant', content: reply });
 
-    // 控制历史长度（保留最近 20 条消息 + system prompt）
-    if (history.length > 21) {
+    // 保留最近 6 条
+    if (history.length > 7) {
       const systemMsg = history[0];
-      session.history = [systemMsg, ...history.slice(-20)];
+      session.history = [systemMsg, ...history.slice(-6)];
     }
 
     return reply;

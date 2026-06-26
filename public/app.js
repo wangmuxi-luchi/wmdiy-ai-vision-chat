@@ -118,56 +118,21 @@ function send(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
 
-let pendingAiMsg = null;
-let pendingUserText = null;
-let ignoringOld = false; // 插话时忽略旧 AI 消息
-
 function handleMsg(msg) {
   switch (msg.type) {
     case 'connected':
       updateConn('on', '在线');
       break;
     case 'speech_start':
-      if (pendingAiMsg) {
-        pendingAiMsg.remove();
-        pendingAiMsg = null;
-      }
-      ignoringOld = true;
-      captureFrame(); // VAD 检测到语音立刻截帧，与 ASR 并行
+      captureFrame();
       break;
     case 'user_message':
-      ignoringOld = false;
-      if (pendingAiMsg) {
-        pendingUserText = msg.text;
-      } else {
-        addMsg('user', msg.text);
-        E.typingDots.classList.remove('hidden');
-      }
-      break;
-    case 'ai_text_delta':
-      if (ignoringOld) break;
-      E.typingDots.classList.add('hidden');
-      if (!pendingAiMsg) {
-        pendingAiMsg = addMsg('ai', msg.delta);
-      } else {
-        pendingAiMsg.textContent += msg.delta;
-        scrollChat();
-      }
+      addMsg('user', msg.text);
+      E.typingDots.classList.remove('hidden');
       break;
     case 'assistant_message':
-      if (ignoringOld) break;
       E.typingDots.classList.add('hidden');
-      if (pendingAiMsg) {
-        pendingAiMsg.textContent = msg.text;
-        pendingAiMsg = null;
-      } else {
-        addMsg('ai', msg.text);
-      }
-      if (pendingUserText) {
-        addMsg('user', pendingUserText);
-        pendingUserText = null;
-        E.typingDots.classList.remove('hidden');
-      }
+      addMsg('ai', msg.text);
       break;
     case 'frame_analyzed':
       break;
@@ -274,7 +239,7 @@ function initAudioMeter(stream) {
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(new Uint8Array(wavBuffer).buffer);
       }
-    }, 300);
+    }, 250);
 
     const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
