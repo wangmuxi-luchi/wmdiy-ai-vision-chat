@@ -49,7 +49,7 @@ AI 通过摄像头看到你，通过麦克风听到你，实时语音对话。
 | 端 | 技术 | 说明 |
 |------|------|------|
 | Web | 原生 HTML/CSS/JS | 摄像头 + 麦克风 + WebSocket |
-| Flutter | Flutter 3.19+ | 腾讯云 ASR，跨平台 |
+| Flutter | Flutter 3.19+ | 腾讯云 ASR、TTS 语速配置、摄像头生命周期修复 |
 
 ---
 
@@ -90,9 +90,11 @@ npm start               # http://localhost:8000
 | 技术 | 说明 |
 |------|------|
 | **音频管线** | PCM RMS 静音检测 → 350ms 判定说完 → HTTP ASR + TTS |
-| **多模态 Agent** | step-3.7-flash 图文融合推理，对话历史 + Token 预算管理 |
-| **按需截图** | 语音触发截图，不持续占用主线程 |
-| **WebSocket 全链路** | JSON + Binary 音频同通道，nginx 反向代理 + HTTPS |
+| **多模态 Agent** | 文字 + 画面融合 prompt，step-3.7-flash 推理，对话历史 + Token 预算 |
+| **模型分离** | 视觉/文本可配置独立 API Key 和 Base URL，支持切换第三方模型 |
+| **按需截图** | 语音触发截图 + 连接预热，不持续占用主线程 |
+| **超时保护** | Vision API 30 秒超时自动放弃，不阻塞后续请求 |
+| **WebSocket 全链路** | JSON + Binary 音频同通道，nginx + HTTPS + PM2 |
 
 ---
 
@@ -111,10 +113,14 @@ npm start               # http://localhost:8000
 
 | 环境变量 | 默认值 | 说明 |
 |---------|--------|------|
-| `STEPFUN_API_KEY` | - | 必填 |
-| `STEPFUN_BASE_URL` | `https://api.stepfun.com/v1` | API 地址 |
+| `STEPFUN_API_KEY` | - | 统一 API Key（必填） |
+| `STEPFUN_BASE_URL` | `https://api.stepfun.com/v1` | 统一 API 地址 |
+| `VISION_API_KEY` | `STEPFUN_API_KEY` | 视觉模型独立 Key（可选，支持硅基流动等第三方） |
+| `VISION_BASE_URL` | `STEPFUN_BASE_URL` | 视觉模型独立地址 |
+| `CHAT_API_KEY` | `STEPFUN_API_KEY` | 文本模型独立 Key（可选） |
+| `CHAT_BASE_URL` | `STEPFUN_BASE_URL` | 文本模型独立地址 |
+| `VISION_MODEL` | `step-3.7-flash` | 视觉理解模型 |
 | `ASR_MODEL` | `stepaudio-2.5-asr` | 语音识别模型 |
-| `VISION_MODEL` | `step-3.7-flash` | 视觉/对话模型 |
 | `TTS_MODEL` | `step-tts-mini` | 语音合成模型 |
 | `PORT` | `8000` | 服务端口 |
 
