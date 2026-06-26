@@ -15,7 +15,7 @@ abstract class CommunicationService {
   
   Stream<String> get messageStream;
   
-  Stream<Map<String, dynamic>> get commandStream;
+  Stream<dynamic> get commandStream;
   
   bool get isConnected;
   
