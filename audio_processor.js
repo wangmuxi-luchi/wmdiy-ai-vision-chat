@@ -3,6 +3,7 @@
  */
 
 const fs = require('fs');
+const fsp = require('fs').promises;
 const path = require('path');
 const { SilenceDetector } = require('./cost_controller');
 
@@ -17,17 +18,14 @@ const silenceDetectors = new Map();
  */
 async function transcribeAudio(client, audioBuffer) {
   const tmpDir = path.join(__dirname, 'tmp');
-  if (!fs.existsSync(tmpDir)) {
-    fs.mkdirSync(tmpDir, { recursive: true });
-  }
+  await fsp.mkdir(tmpDir, { recursive: true });
 
   const tmpPath = path.join(tmpDir, `audio_${Date.now()}.wav`);
 
   try {
-    fs.writeFileSync(tmpPath, audioBuffer);
+    await fsp.writeFile(tmpPath, audioBuffer);
     console.log(`[ASR] 音频文件已写入: ${tmpPath} (${audioBuffer.length} bytes)`);
 
-    // 阶跃星辰 ASR — OpenAI 兼容接口
     const response = await client.audio.transcriptions.create({
       model: ASR_MODEL,
       file: fs.createReadStream(tmpPath),
@@ -37,14 +35,12 @@ async function transcribeAudio(client, audioBuffer) {
 
     console.log(`[ASR] 识别成功: "${response}"`);
 
-    // 清理
-    fs.unlinkSync(tmpPath);
+    await fsp.unlink(tmpPath);
 
     return typeof response === 'string' ? response : response.text || '';
   } catch (err) {
     console.error(`[ASR] 识别失败: ${err.message}`);
     if (err.status) console.error(`[ASR] HTTP ${err.status}: ${JSON.stringify(err.error || err.body || {})}`);
-    // 保留文件用于调试
     console.error(`[ASR] 音频文件保留: ${tmpPath}`);
     throw err;
   }

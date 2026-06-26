@@ -107,6 +107,8 @@ wss.on('connection', (ws) => {
   console.log(`[WS] 连接: ${sid}`);
 
   ws.send(JSON.stringify({ type: 'connected', session_id: sid, mode: API_OK ? 'full' : 'demo', timestamp: Date.now() }));
+  // 预热 vision API：连接时截一帧
+  ws.send(JSON.stringify({ type: 'command', data: 'capture_frame' }));
   EventBus.emit('session_connected', { sessionId: sid, timestamp: Date.now() });
 
   // HTTP 音频管线，不需要实时 WebSocket
@@ -238,7 +240,7 @@ const audioDetectors = new Map();   // sid → SilenceDetector
 const agentFailCount = new Map();    // sid → 连续失败次数
 
 function getAudioDetector(sid) {
-  if (!audioDetectors.has(sid)) audioDetectors.set(sid, new SilenceDetector(500));
+  if (!audioDetectors.has(sid)) audioDetectors.set(sid, new SilenceDetector(800));
   return audioDetectors.get(sid);
 }
 
@@ -282,6 +284,8 @@ async function processSpeech(sid, ws) {
   audioChunks.delete(sid);
 
   const pcm = Buffer.concat(chunks);
+  // 至少 0.5 秒音频才送 ASR（24kHz 16bit = 24000 bytes）
+  if (pcm.length < 24000) { console.log(`[HTTP-ASR] 音频太短: ${sid}, ${pcm.length} bytes，跳过`); return; }
   const wav = pcmToWav(pcm, 24000);
   console.log(`[HTTP-ASR] 处理语音: ${sid}, ${pcm.length} bytes`);
 
@@ -297,6 +301,12 @@ async function processSpeech(sid, ws) {
   console.log(`[HTTP-ASR] 用户说: "${userText}"`);
 
   EventBus.emit('user_speech', { sessionId: sid, text: userText, timestamp: Date.now() });
+
+  // 确保画面描述就绪（用 scene_memory 缓存，不依赖正在进行的帧分析）
+  const sceneMem = getSceneMemory(sid);
+  if (sceneMem.description && sceneMem.description !== '尚未获取画面') {
+    updateFrameDescription(sid, sceneMem.description);
+  }
 
   // 2. Agent (step-3.7-flash + 视觉上下文)
   let reply;
