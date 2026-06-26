@@ -11,7 +11,7 @@ AI 通过摄像头看到你，通过麦克风听到你，实时语音对话。
 ```
 浏览器 ──WebSocket──→ Node.js ──HTTP──→ 阶跃星辰 API
   │                      │
-  ├─ 摄像头 (按需截图)    ├─ 自研静音检测（PCM RMS）
+  ├─ 摄像头 (按需截图)    ├─ 静音检测（PCM RMS）
   ├─ 麦克风 (PCM 24kHz)   ├─ HTTP ASR（stepaudio-2.5-asr）
   └─ 文字聊天             ├─ Agent 编排（step-3.7-flash + 视觉上下文）
                           └─ HTTP TTS（step-tts-mini）
@@ -89,7 +89,7 @@ npm start               # http://localhost:8000
 
 | 技术 | 说明 |
 |------|------|
-| **自研音频管线** | PCM RMS 静音检测 → 350ms 判定说完 → HTTP ASR + TTS |
+| **音频管线** | PCM RMS 静音检测 → 350ms 判定说完 → HTTP ASR + TTS |
 | **多模态 Agent** | step-3.7-flash 图文融合推理，对话历史 + Token 预算管理 |
 | **按需截图** | 语音触发截图，不持续占用主线程 |
 | **WebSocket 全链路** | JSON + Binary 音频同通道，nginx 反向代理 + HTTPS |
