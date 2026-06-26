@@ -4,7 +4,7 @@ import '../communication_service.dart';
 
 class MockCommunicationService implements CommunicationService {
   final StreamController<String> _messageController = StreamController<String>.broadcast();
-  final StreamController<Map<String, dynamic>> _commandController = StreamController<Map<String, dynamic>>.broadcast();
+  final StreamController<dynamic> _commandController = StreamController<dynamic>.broadcast();
   bool _isConnected = false;
 
   @override
@@ -54,7 +54,7 @@ class MockCommunicationService implements CommunicationService {
   Stream<String> get messageStream => _messageController.stream;
 
   @override
-  Stream<Map<String, dynamic>> get commandStream => _commandController.stream;
+  Stream<dynamic> get commandStream => _commandController.stream;
 
   @override
   bool get isConnected => _isConnected;

@@ -15,7 +15,7 @@ class WebSocketCommunicationService implements CommunicationService {
   Timer? _heartbeatTimer;
   Timer? _reconnectTimer;
   final _messageController = StreamController<String>.broadcast();
-  final _commandController = StreamController<Map<String, dynamic>>.broadcast();
+  final _commandController = StreamController<dynamic>.broadcast();
   final _stateController = StreamController<ConnectionState>.broadcast();
 
   String _url;
@@ -239,7 +239,7 @@ class WebSocketCommunicationService implements CommunicationService {
   Stream<String> get messageStream => _messageController.stream;
 
   @override
-  Stream<Map<String, dynamic>> get commandStream => _commandController.stream;
+  Stream<dynamic> get commandStream => _commandController.stream;
 
   @override
   bool get isConnected => _isConnected();
