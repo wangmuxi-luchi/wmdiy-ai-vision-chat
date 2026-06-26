@@ -56,9 +56,10 @@ AI 通过摄像头看到你，通过麦克风听到你，实时语音对话。
 ## 快速启动
 
 ```bash
+cd backend
 npm install
-cp .env.example .env    # 填入 STEPFUN_API_KEY
-npm start               # http://localhost:8000
+cp ../.env.example .env    # 填入 STEPFUN_API_KEY
+npm start                  # http://localhost:8000
 ```
 
 ---
@@ -66,21 +67,24 @@ npm start               # http://localhost:8000
 ## 目录结构
 
 ```
-├── server.js              # 服务入口（Express + WebSocket + HTTP 音频管线）
-├── agent_orchestrator.js  # Agent 编排（step-3.7-flash + 视觉上下文 + Token 预算）
-├── audio_processor.js     # HTTP ASR + TTS
-├── vision_processor.js    # 帧压缩 + Vision API
-├── scene_memory.js        # 视觉场景缓存
-├── cost_controller.js     # 静音检测 / Token 控制
-├── event_bus.js           # 事件总线
-├── websocket_handler.js   # WebSocket 会话管理
-├── realtime_handler.js    # 实时语音 WebSocket 客户端（已弃用）
-├── public/                # Web 前端
-│   ├── index.html
-│   ├── style.css
-│   └── app.js
-├── frontend_kotlin/       # Flutter 前端
-└── package.json
+├── backend/                  # Node.js 后端
+│   ├── server.js             # 服务入口
+│   ├── agent_orchestrator.js # Agent 编排
+│   ├── audio_processor.js    # HTTP ASR + TTS
+│   ├── vision_processor.js   # 帧压缩 + Vision API
+│   ├── scene_memory.js       # 视觉场景缓存
+│   ├── cost_controller.js    # 静音检测 / Token 控制
+│   ├── event_bus.js          # 事件总线
+│   ├── realtime_handler.js   # 实时语音客户端（已弃用）
+│   ├── websocket_handler.js  # WebSocket 会话管理
+│   └── package.json
+├── frontend/                 # Web 前端
+│   └── public/
+│       ├── index.html
+│       ├── app.js
+│       └── style.css
+├── frontend_kotlin/          # Flutter 前端（独立项目）
+└── README.md
 ```
 
 ---
