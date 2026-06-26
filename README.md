@@ -75,7 +75,6 @@ npm start                  # http://localhost:8000
 │   ├── scene_memory.js       # 视觉场景缓存
 │   ├── cost_controller.js    # 静音检测 / Token 控制
 │   ├── event_bus.js          # 事件总线
-│   ├── realtime_handler.js   # 实时语音客户端（已弃用）
 │   ├── websocket_handler.js  # WebSocket 会话管理
 │   └── package.json
 ├── frontend/                 # Web 前端
